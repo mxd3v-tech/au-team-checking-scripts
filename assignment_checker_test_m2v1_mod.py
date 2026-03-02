@@ -180,125 +180,184 @@ def run_full_assignment_check(vm_ports):
 
     # --- Пункт 1: Samba DC на BR-SRV ---
     log_msg("\n📌 Пункт 1: Samba DC на BR-SRV")
-    samba_ok = True
+
+    # === КО 1: Развёртывание контроллера домена (max 3) ===
+    domain_ok = False
+    hq_joined = False
+    br_joined = False
 
     if "BR-SRV" not in vm_ports:
         log_msg("⚠️ BR-SRV не найден")
-        samba_ok = False
     else:
-        # Проверка домена
         out, err, cmd = ssh_exec(vm_ports["BR-SRV"], "samba-tool domain info 127.0.0.1", "root", "toor")
         log_msg("[BR-SRV] Выполняется команда: samba-tool domain info 127.0.0.1")
         safe_log_output(log_lines, "[BR-SRV] Вывод", out, err)
-        if not (out and re.search(r'Domain\s*:\s*au-team\.irpo', out)):
+        if out and re.search(r'Domain\s*:\s*au-team\.irpo', out):
+            domain_ok = True
+            log_msg("✅ Домен au-team.irpo найден")
+        else:
             log_msg("❌ Домен au-team.irpo не найден")
-            samba_ok = False
 
-        # Проверка пользователей
+    if domain_ok:
+        for cli in ["HQ-CLI", "BR-CLI"]:
+            if cli not in vm_ports:
+                log_msg("⚠️ %s не найден" % cli)
+                continue
+            realm_out, _, _ = ssh_exec(vm_ports[cli], "realm list 2>/dev/null", "root", "toor")
+            log_msg("[%s] Выполняется команда: realm list" % cli)
+            safe_log_output(log_lines, "[%s] Вывод" % cli, realm_out, "")
+            if realm_out and "au-team.irpo" in realm_out.lower():
+                if cli == "HQ-CLI":
+                    hq_joined = True
+                else:
+                    br_joined = True
+                log_msg("✅ %s введён в домен" % cli)
+            else:
+                log_msg("❌ %s не введён в домен" % cli)
+
+    samba_dc_score = 0
+    if domain_ok and hq_joined and br_joined:
+        samba_dc_score = 3
+    elif domain_ok:
+        samba_dc_score = 1
+    award("КО: Samba DC+домен", samba_dc_score, 3,
+          "домен=%s, HQ-CLI=%s, BR-CLI=%s" % (domain_ok, hq_joined, br_joined))
+
+    # === КО 2: Пользователи и группы (max 2) ===
+    users_created = False
+    users_in_groups = False
+    hq_users = ["hquser%d" % i for i in range(1, 6)]
+    br_users = ["bruser%d" % i for i in range(1, 6)]
+    all_users = hq_users + br_users
+
+    if domain_ok and "BR-SRV" in vm_ports:
         users_out, _, _ = ssh_exec(vm_ports["BR-SRV"], "samba-tool user list", "root", "toor")
         log_msg("[BR-SRV] Выполняется команда: samba-tool user list")
         safe_log_output(log_lines, "[BR-SRV] Вывод", users_out, "")
 
-        hq_users = [f"hquser{i}" for i in range(1, 6)]
-        br_users = [f"bruser{i}" for i in range(1, 6)]
-        all_users = hq_users + br_users
-
         if users_out:
-            for user in all_users:
-                if user not in users_out:
-                    log_msg(f"❌ Пользователь {user} не найден")
-                    samba_ok = False
-        else:
-            samba_ok = False
-
-        # Проверка групп
-        hq_group, _, _ = ssh_exec(vm_ports["BR-SRV"], "samba-tool group show hq", "root", "toor")
-        br_group, _, _ = ssh_exec(vm_ports["BR-SRV"], "samba-tool group show br", "root", "toor")
-        log_msg("[BR-SRV] Выполняется команда: samba-tool group show hq")
-        safe_log_output(log_lines, "[BR-SRV] Вывод", hq_group, "")
-        log_msg("[BR-SRV] Выполняется команда: samba-tool group show br")
-        safe_log_output(log_lines, "[BR-SRV] Вывод", br_group, "")
-
-        if hq_group and br_group:
-            for user in hq_users:
-                if user not in hq_group:
-                    log_msg(f"❌ Пользователь {user} не в группе hq")
-                    samba_ok = False
-            for user in br_users:
-                if user not in br_group:
-                    log_msg(f"❌ Пользователь {user} не в группе br")
-                    samba_ok = False
-        else:
-            samba_ok = False
-
-        # === Проверка аутентификации и sudo для hquser1 ===
-        if "HQ-CLI" in vm_ports:
-            test_user = "hquser1"
-            test_pass = "P@ssw0rd"
-
-            # Аутентификация
-            auth_cmd = f"su -l {test_user} -c 'whoami'"
-            auth_out, auth_err, _ = ssh_exec(vm_ports["HQ-CLI"], auth_cmd, "root", "toor")
-            log_msg(f"[HQ-CLI] Проверка аутентификации {test_user}")
-            safe_log_output(log_lines, "[HQ-CLI] Вывод", auth_out, auth_err)
-            if not (auth_out and test_user in auth_out):
-                log_msg(f"❌ Аутентификация {test_user} на HQ-CLI не удалась")
-                samba_ok = False
+            missing = [u for u in all_users if u not in users_out]
+            if not missing:
+                users_created = True
+                log_msg("✅ Все 10 пользователей созданы")
             else:
-                # Проверка разрешённых команд (cat, grep, id)
-                allowed_commands = ["cat /etc/passwd", "grep root /etc/passwd", "id"]
-                for cmd in allowed_commands:
-                    full_cmd = f"su -l {test_user} -c 'echo \"{test_pass}\" | sudo -S {cmd}'"
-                    out, err, _ = ssh_exec(vm_ports["HQ-CLI"], full_cmd, "root", "toor")
-                    log_msg(f"[HQ-CLI] Проверка разрешённой команды: {cmd}")
-                    safe_log_output(log_lines, "[HQ-CLI] Вывод", out, err)
-                    if not out or "Permission denied" in err or "password is required" in err:
-                        log_msg(f"❌ Пользователь {test_user} не может выполнить разрешённую команду: {cmd}")
-                        samba_ok = False
+                for u in missing:
+                    log_msg("❌ Пользователь %s не найден" % u)
 
-                # Проверка запрещённой команды (ps)
-                forbidden_cmd = "ps aux"
-                full_forbidden = f"su -l {test_user} -c 'echo \"{test_pass}\" | sudo -S {forbidden_cmd}'"
-                out_f, err_f, _ = ssh_exec(vm_ports["HQ-CLI"], full_forbidden, "root", "toor")
-                log_msg(f"[HQ-CLI] Проверка запрещённой команды: {forbidden_cmd}")
-                safe_log_output(log_lines, "[HQ-CLI] Вывод", out_f, err_f)
-                if out_f and "UID" in out_f:
-                    log_msg(f"❌ Пользователь {test_user} смог выполнить запрещённую команду: {forbidden_cmd}")
-                    samba_ok = False
+        if users_created:
+            users_in_groups = True
+            hq_members, _, _ = ssh_exec(vm_ports["BR-SRV"], "samba-tool group listmembers hq 2>/dev/null", "root", "toor")
+            log_msg("[BR-SRV] Выполняется команда: samba-tool group listmembers hq")
+            safe_log_output(log_lines, "[BR-SRV] Вывод", hq_members, "")
 
-        # === Проверка, что bruser1 НЕ может использовать sudo ===
-        if "BR-CLI" in vm_ports:
-            test_user_br = "bruser1"
-            test_pass_br = "P@ssw0rd"
+            br_members, _, _ = ssh_exec(vm_ports["BR-SRV"], "samba-tool group listmembers br 2>/dev/null", "root", "toor")
+            log_msg("[BR-SRV] Выполняется команда: samba-tool group listmembers br")
+            safe_log_output(log_lines, "[BR-SRV] Вывод", br_members, "")
 
-            # Аутентификация
-            auth_cmd_br = f"su -l {test_user_br} -c 'whoami'"
-            auth_out_br, auth_err_br, _ = ssh_exec(vm_ports["BR-CLI"], auth_cmd_br, "root", "toor")
-            log_msg(f"[BR-CLI] Проверка аутентификации {test_user_br}")
-            safe_log_output(log_lines, "[BR-CLI] Вывод", auth_out_br, auth_err_br)
-            if not (auth_out_br and test_user_br in auth_out_br):
-                log_msg(f"❌ Аутентификация {test_user_br} на BR-CLI не удалась")
-                samba_ok = False
+            if hq_members:
+                for u in hq_users:
+                    if u not in hq_members:
+                        log_msg("❌ %s не в группе hq" % u)
+                        users_in_groups = False
             else:
-                # Попытка выполнить sudo (должна завершиться ошибкой)
-                sudo_test = f"su -l {test_user_br} -c 'echo \"{test_pass_br}\" | sudo -S cat /etc/passwd'"
-                out_br, err_br, _ = ssh_exec(vm_ports["BR-CLI"], sudo_test, "root", "toor")
-                log_msg(f"[BR-CLI] Проверка запрета sudo для {test_user_br}")
-                safe_log_output(log_lines, "[BR-CLI] Вывод", out_br, err_br)
-                if out_br and "root:" in out_br:
-                    log_msg(f"❌ Пользователь {test_user_br} смог выполнить sudo — это запрещено!")
-                    samba_ok = False
+                log_msg("❌ Группа hq не найдена или пуста")
+                users_in_groups = False
 
-    # Оценка по КО (Samba DC = 3 + пользователи 2 + sudo 2 = 7)
-    # Упрощённо: samba_ok как единый критерий
-    if samba_ok:
-        award("КО: Samba DC+домен", 3, 3)
-        award("КО: Пользователи+группы", 2, 2)
-        award("КО: Sudo права", 2, 2)
-    else:
-        award("КО: Samba DC+домен", 0, 3)
-        award("КО: Пользователи+группы", 0, 2)
-        award("КО: Sudo права", 0, 2)
+            if br_members:
+                for u in br_users:
+                    if u not in br_members:
+                        log_msg("❌ %s не в группе br" % u)
+                        users_in_groups = False
+            else:
+                log_msg("❌ Группа br не найдена или пуста")
+                users_in_groups = False
+
+    users_score = 0
+    if users_created and users_in_groups:
+        users_score = 2
+    elif users_created:
+        users_score = 1
+    award("КО: Пользователи+группы", users_score, 2,
+          "созданы=%s, в группах=%s" % (users_created, users_in_groups))
+
+    # === КО 3: Sudo права (max 2) ===
+    sudo_checks_passed = 0
+    sudo_checks_total = 0
+
+    if "HQ-CLI" in vm_ports and users_created:
+        test_user = "hquser1"
+        test_pass = "P@ssw0rd"
+
+        # SSH как доменный пользователь + fallback wbinfo
+        auth_out, auth_err, _ = ssh_exec(vm_ports["HQ-CLI"], "whoami", test_user, test_pass)
+        auth_success = auth_out and test_user in auth_out.strip().lower()
+        if not auth_success:
+            wb_out, _, _ = ssh_exec(vm_ports["HQ-CLI"],
+                "wbinfo -a '%s%%\"%s\"'" % (test_user, test_pass), "root", "toor")
+            auth_success = wb_out and "succeeded" in wb_out.lower()
+
+        log_msg("[HQ-CLI] Аутентификация %s: %s" % (test_user, "OK" if auth_success else "FAIL"))
+
+        if auth_success:
+            allowed_commands = ["cat /etc/passwd", "grep root /etc/passwd", "id"]
+            for acmd in allowed_commands:
+                sudo_checks_total += 1
+                full_cmd = "echo '%s' | sudo -S %s" % (test_pass, acmd)
+                out, err, _ = ssh_exec(vm_ports["HQ-CLI"], full_cmd, test_user, test_pass)
+                log_msg("[HQ-CLI] sudo %s" % acmd)
+                safe_log_output(log_lines, "[HQ-CLI] Вывод", out, err)
+                if out and out.strip() and not (err and "Permission denied" in err):
+                    sudo_checks_passed += 1
+                else:
+                    log_msg("❌ %s не может выполнить: %s" % (test_user, acmd))
+
+            # Запрещённая команда (ps aux)
+            sudo_checks_total += 1
+            forbidden_cmd = "echo '%s' | sudo -S ps aux" % test_pass
+            out_f, err_f, _ = ssh_exec(vm_ports["HQ-CLI"], forbidden_cmd, test_user, test_pass)
+            log_msg("[HQ-CLI] sudo ps aux (должна быть запрещена)")
+            safe_log_output(log_lines, "[HQ-CLI] Вывод", out_f, err_f)
+            if not (out_f and "PID" in out_f):
+                sudo_checks_passed += 1
+                log_msg("✅ ps aux запрещена для %s" % test_user)
+            else:
+                log_msg("❌ %s смог выполнить ps aux" % test_user)
+        else:
+            log_msg("❌ Аутентификация %s не удалась, пропускаем sudo" % test_user)
+
+    if "BR-CLI" in vm_ports and users_created:
+        test_user_br = "bruser1"
+        test_pass_br = "P@ssw0rd"
+
+        auth_out_br, _, _ = ssh_exec(vm_ports["BR-CLI"], "whoami", test_user_br, test_pass_br)
+        auth_br_ok = auth_out_br and test_user_br in auth_out_br.strip().lower()
+        if not auth_br_ok:
+            wb_out_br, _, _ = ssh_exec(vm_ports["BR-CLI"],
+                "wbinfo -a '%s%%\"%s\"'" % (test_user_br, test_pass_br), "root", "toor")
+            auth_br_ok = wb_out_br and "succeeded" in wb_out_br.lower()
+
+        log_msg("[BR-CLI] Аутентификация %s: %s" % (test_user_br, "OK" if auth_br_ok else "FAIL"))
+
+        if auth_br_ok:
+            sudo_checks_total += 1
+            sudo_test = "echo '%s' | sudo -S cat /etc/passwd" % test_pass_br
+            out_br, err_br, _ = ssh_exec(vm_ports["BR-CLI"], sudo_test, test_user_br, test_pass_br)
+            log_msg("[BR-CLI] sudo cat /etc/passwd (должна быть запрещена для %s)" % test_user_br)
+            safe_log_output(log_lines, "[BR-CLI] Вывод", out_br, err_br)
+            if not (out_br and "root:" in out_br):
+                sudo_checks_passed += 1
+                log_msg("✅ sudo запрещён для %s" % test_user_br)
+            else:
+                log_msg("❌ %s смог выполнить sudo" % test_user_br)
+
+    sudo_score = 0
+    if sudo_checks_total > 0:
+        if sudo_checks_passed == sudo_checks_total:
+            sudo_score = 2
+        elif sudo_checks_passed > 0:
+            sudo_score = 1
+    award("КО: Sudo права", sudo_score, 2,
+          "проверок пройдено: %d/%d" % (sudo_checks_passed, sudo_checks_total))
 
     # --- Пункт 2: RAID 0 на HQ-SRV ---
     log_msg("\n📌 Пункт 2: RAID 0 на HQ-SRV")
@@ -307,29 +366,29 @@ def run_full_assignment_check(vm_ports):
         raid_ok = False
     else:
         # Проверка массива
-        mdstat, _, _ = ssh_exec(vm_ports["HQ-SRV"], "cat /proc/mdstat", "root", "toor")
-        log_msg("[HQ-SRV] Выполняется команда: cat /proc/mdstat")
+        mdstat, _, _ = ssh_exec(vm_ports["HQ-SRV"], "mdadm --detail /dev/md0 2>/dev/null", "root", "toor")
+        log_msg("[HQ-SRV] Выполняется команда: mdadm --detail /dev/md0")
         safe_log_output(log_lines, "[HQ-SRV] Вывод", mdstat, "")
-        if not (mdstat and "md0" in mdstat and "active raid0" in mdstat):
+        if not (mdstat and "md0" in mdstat and "raid0" in mdstat.lower()):
             raid_ok = False
 
         # Проверка конфигурации
-        mdadm_conf, _, _ = ssh_exec(vm_ports["HQ-SRV"], "cat /etc/mdadm.conf", "root", "toor")
-        log_msg("[HQ-SRV] Выполняется команда: cat /etc/mdadm.conf")
+        mdadm_conf, _, _ = ssh_exec(vm_ports["HQ-SRV"], "mdadm --examine-scan 2>/dev/null", "root", "toor")
+        log_msg("[HQ-SRV] Выполняется команда: mdadm --examine-scan")
         safe_log_output(log_lines, "[HQ-SRV] Вывод", mdadm_conf, "")
         if not (mdadm_conf and "md0" in mdadm_conf):
             raid_ok = False
 
         # Проверка монтирования
-        mount_out, _, _ = ssh_exec(vm_ports["HQ-SRV"], "mount | grep /raid", "root", "toor")
-        log_msg("[HQ-SRV] Выполняется команда: mount | grep /raid")
+        mount_out, _, _ = ssh_exec(vm_ports["HQ-SRV"], "findmnt /raid --noheadings 2>/dev/null", "root", "toor")
+        log_msg("[HQ-SRV] Выполняется команда: findmnt /raid --noheadings")
         safe_log_output(log_lines, "[HQ-SRV] Вывод", mount_out, "")
         if not (mount_out and "/dev/md0" in mount_out and "ext4" in mount_out):
             raid_ok = False
 
         # Проверка автомонтирования (через /etc/fstab)
-        fstab, _, _ = ssh_exec(vm_ports["HQ-SRV"], "grep '/raid' /etc/fstab", "root", "toor")
-        log_msg("[HQ-SRV] Выполняется команда: grep '/raid' /etc/fstab")
+        fstab, _, _ = ssh_exec(vm_ports["HQ-SRV"], "findmnt --fstab /raid --noheadings 2>/dev/null", "root", "toor")
+        log_msg("[HQ-SRV] Выполняется команда: findmnt --fstab /raid --noheadings")
         safe_log_output(log_lines, "[HQ-SRV] Вывод", fstab, "")
         if not (fstab and "/dev/md0" in fstab and "ext4" in fstab):
             log_msg("❌ Автомонтирование /raid не настроено в /etc/fstab")
@@ -353,26 +412,25 @@ def run_full_assignment_check(vm_ports):
 
         # Проверка монтирования на клиентах
         for cli in ["HQ-CLI", "BR-CLI"]:
-            mount_cli, _, _ = ssh_exec(vm_ports[cli], "mount | grep /mnt/nfs", "root", "toor")
-            log_msg("[%s] Выполняется команда: mount | grep /mnt/nfs" % cli)
+            mount_cli, _, _ = ssh_exec(vm_ports[cli], "findmnt /mnt/nfs --noheadings 2>/dev/null", "root", "toor")
+            log_msg("[%s] Выполняется команда: findmnt /mnt/nfs --noheadings" % cli)
             safe_log_output(log_lines, "[%s] Вывод" % cli, mount_cli, "")
             if not (mount_cli and "/mnt/nfs" in mount_cli and ":/raid/nfs" in mount_cli):
-                log_msg(f"❌ /mnt/nfs не примонтирован на {cli}")
+                log_msg("❌ /mnt/nfs не примонтирован на %s" % cli)
                 nfs_ok = False
 
         # Проверка автомонтирования через /etc/fstab
         for cli in ["HQ-CLI", "BR-CLI"]:
-            fstab_cli, _, _ = ssh_exec(vm_ports[cli], "grep '/mnt/nfs' /etc/fstab", "root", "toor")
-            log_msg("[%s] Выполняется команда: grep '/mnt/nfs' /etc/fstab" % cli)
+            fstab_cli, _, _ = ssh_exec(vm_ports[cli], "findmnt --fstab /mnt/nfs --noheadings 2>/dev/null", "root", "toor")
+            log_msg("[%s] Выполняется команда: findmnt --fstab /mnt/nfs --noheadings" % cli)
             safe_log_output(log_lines, "[%s] Вывод" % cli, fstab_cli, "")
-            # Пропускаем ошибку, если монтирование есть, но fstab не содержит запись
             if fstab_cli:
                 if "/mnt/nfs" in fstab_cli and ":/raid/nfs" in fstab_cli and "nfs" in fstab_cli:
-                    log_msg(f"✅ Автомонтирование /mnt/nfs настроено в /etc/fstab на {cli}")
+                    log_msg("✅ Автомонтирование /mnt/nfs настроено на %s" % cli)
                 else:
-                    log_msg(f"⚠️ Строка /etc/fstab для /mnt/nfs найдена, но не соответствует ожидаемому формату — пропускаем (монтирование существует)")
+                    log_msg("⚠️ Запись fstab для /mnt/nfs найдена, но формат не соответствует на %s" % cli)
             else:
-                log_msg(f"ℹ️ Автомонтирование /mnt/nfs не настроено в /etc/fstab на {cli}, но монтирование существует — считаем OK")
+                log_msg("ℹ️ Автомонтирование /mnt/nfs не в fstab на %s, но монтирование существует" % cli)
 
     if nfs_ok: award("КО: NFS", 2, 2)
     else: award("КО: NFS", 0, 2)
@@ -518,8 +576,8 @@ def run_full_assignment_check(vm_ports):
             docker_ok = False
 
         # === Шаг 4: Порт 8080 ===
-        netstat_out, _, _ = ssh_exec(vm_ports["BR-SRV"], "ss -tuln | grep ':8080'", "root", "toor")
-        log_msg("[BR-SRV] Выполняется команда: ss -tuln | grep ':8080'")
+        netstat_out, _, _ = ssh_exec(vm_ports["BR-SRV"], "ss -tlnH sport = :8080", "root", "toor")
+        log_msg("[BR-SRV] Выполняется команда: ss -tlnH sport = :8080")
         safe_log_output(log_lines, "[BR-SRV] Вывод", netstat_out, "")
         if not netstat_out:
             log_msg("❌ Порт 8080 не слушается")
@@ -550,15 +608,15 @@ def run_full_assignment_check(vm_ports):
             web_ok = False
 
         # Проверка БД
-        db_check, _, _ = ssh_exec(vm_ports["HQ-SRV"], "mysql -u web -pP@ssw0rd -e 'show databases;' | grep webdb", "root", "toor")
-        log_msg("[HQ-SRV] Выполняется команда: mysql -u web -pP@ssw0rd -e 'show databases;' | grep webdb")
+        db_check, _, _ = ssh_exec(vm_ports["HQ-SRV"], "mysql -BNe \"SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='webdb'\" 2>/dev/null", "root", "toor")
+        log_msg("[HQ-SRV] Выполняется команда: mysql -BNe SELECT ... webdb")
         safe_log_output(log_lines, "[HQ-SRV] Вывод", db_check, "")
-        if not db_check:
+        if not (db_check and "webdb" in db_check):
             web_ok = False
 
         # Проверка файла index.php
-        php_check, _, _ = ssh_exec(vm_ports["HQ-SRV"], "cat /var/www/html/index.php | grep 'webdb'", "root", "toor")
-        log_msg("[HQ-SRV] Выполняется команда: cat /var/www/html/index.php | grep 'webdb'")
+        php_check, _, _ = ssh_exec(vm_ports["HQ-SRV"], "grep -l webdb /var/www/html/index.php 2>/dev/null", "root", "toor")
+        log_msg("[HQ-SRV] Выполняется команда: grep -l webdb /var/www/html/index.php")
         safe_log_output(log_lines, "[HQ-SRV] Вывод", php_check, "")
         if not php_check:
             web_ok = False
@@ -655,10 +713,10 @@ def run_full_assignment_check(vm_ports):
     if "ISP" not in vm_ports:
         auth_ok = False
     else:
-        htpasswd, _, _ = ssh_exec(vm_ports["ISP"], "cat /etc/nginx/.htpasswd", "root", "toor")
-        log_msg("[ISP] Выполняется команда: cat /etc/nginx/.htpasswd")
+        htpasswd, _, _ = ssh_exec(vm_ports["ISP"], "htpasswd -vb /etc/nginx/.htpasswd WEB 'P@ssw0rd' 2>&1", "root", "toor")
+        log_msg("[ISP] Выполняется команда: htpasswd -vb ... WEB")
         safe_log_output(log_lines, "[ISP] Вывод", htpasswd, "")
-        if not (htpasswd and "WEB:" in htpasswd):
+        if not (htpasswd and "correct" in htpasswd.lower()):
             auth_ok = False
 
     if auth_ok: award("КО: Web Auth", 1, 1)

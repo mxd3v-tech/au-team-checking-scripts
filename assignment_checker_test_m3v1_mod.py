@@ -189,22 +189,30 @@ def run_full_assignment_check(vm_ports):
             else:
                 log_msg(f"✅ Найдено {len(custom_users)} пользователей в домене")
 
-        # Проверка входа на HQ-CLI (пробуем первого найденного пользователя)
-        if import_ok and "HQ-CLI" in vm_ports:
-            # Проверяем что domain join работает — getent passwd должен видеть доменных пользователей
-            getent_out, _, _ = ssh_exec(vm_ports["HQ-CLI"], "getent passwd | grep -i au-team", "root", "toor")
-            log_msg("[HQ-CLI] Выполняется команда: getent passwd | grep -i au-team")
-            safe_log_output(log_lines, "[HQ-CLI] Вывод", getent_out, "")
-            if not getent_out:
-                # Пробуем альтернативный вариант — wbinfo
-                wbinfo_out, _, _ = ssh_exec(vm_ports["HQ-CLI"], "wbinfo -u", "root", "toor")
-                log_msg("[HQ-CLI] Выполняется команда: wbinfo -u")
-                safe_log_output(log_lines, "[HQ-CLI] Вывод", wbinfo_out, "")
-                if not wbinfo_out or len(wbinfo_out.strip().splitlines()) < 3:
-                    log_msg("❌ Доменные пользователи не видны на HQ-CLI")
-                    import_ok = False
-                else:
-                    log_msg("✅ Доменные пользователи доступны на HQ-CLI")
+        # Проверка входа на HQ-CLI — SSH как доменный пользователь + fallback wbinfo
+        if import_ok and "HQ-CLI" in vm_ports and custom_users:
+            test_user = custom_users[0]
+            test_pass = "P@ssw0rd"
+
+            # Попытка SSH как доменный пользователь (создаёт профиль при первом входе)
+            auth_out, auth_err, _ = ssh_exec(vm_ports["HQ-CLI"], "whoami", test_user, test_pass)
+            auth_success = auth_out and test_user in auth_out.strip().lower()
+            log_msg("[HQ-CLI] SSH вход как %s: %s" % (test_user, "OK" if auth_success else "FAIL"))
+            safe_log_output(log_lines, "[HQ-CLI] Вывод", auth_out, auth_err)
+
+            if not auth_success:
+                # Fallback: wbinfo
+                wb_out, _, _ = ssh_exec(vm_ports["HQ-CLI"],
+                    "wbinfo -a '%s%%\"%s\"'" % (test_user, test_pass), "root", "toor")
+                log_msg("[HQ-CLI] wbinfo -a %s" % test_user)
+                safe_log_output(log_lines, "[HQ-CLI] Вывод", wb_out, "")
+                if wb_out and "succeeded" in wb_out.lower():
+                    auth_success = True
+                    log_msg("✅ wbinfo аутентификация %s успешна" % test_user)
+
+            if not auth_success:
+                log_msg("❌ Доменные пользователи не доступны на HQ-CLI")
+                import_ok = False
             else:
                 log_msg("✅ Доменные пользователи доступны на HQ-CLI")
 
@@ -368,8 +376,8 @@ def run_full_assignment_check(vm_ports):
         safe_log_output(log_lines, "[HQ-SRV] Вывод", rsyslog_conf, "")
 
         # Проверяем что rsyslog слушает сеть (UDP 514 или TCP 514)
-        listen_out, _, _ = ssh_exec(vm_ports["HQ-SRV"], "ss -tuln | grep ':514'", "root", "toor")
-        log_msg("[HQ-SRV] Выполняется команда: ss -tuln | grep ':514'")
+        listen_out, _, _ = ssh_exec(vm_ports["HQ-SRV"], "ss -tulnH sport = :514", "root", "toor")
+        log_msg("[HQ-SRV] Выполняется команда: ss -tulnH sport = :514")
         safe_log_output(log_lines, "[HQ-SRV] Вывод", listen_out, "")
         if not listen_out:
             log_msg("❌ rsyslog не слушает порт 514")
@@ -544,10 +552,12 @@ def run_full_assignment_check(vm_ports):
         backup_ok = False
     else:
         # Проверяем что сервис бэкапа запущен
-        acronis_out, _, _ = ssh_exec(vm_ports["HQ-SRV"], "systemctl list-units --type=service --state=running | grep -i -E '(acronis|cyber|backup|mms)' 2>/dev/null", "root", "toor")
+        acronis_out, _, _ = ssh_exec(vm_ports["HQ-SRV"],
+            "systemctl is-active acronis_mms 2>/dev/null || systemctl is-active cyber-protect 2>/dev/null || systemctl is-active acronis_service 2>/dev/null",
+            "root", "toor")
         log_msg("[HQ-SRV] Проверка сервисов резервного копирования")
         safe_log_output(log_lines, "[HQ-SRV] Вывод", acronis_out, "")
-        if not acronis_out:
+        if not (acronis_out and "active" in acronis_out):
             log_msg("❌ Сервисы резервного копирования не найдены")
             backup_ok = False
         else:
@@ -555,18 +565,20 @@ def run_full_assignment_check(vm_ports):
 
     # Проверяем агент на HQ-CLI
     if backup_ok and "HQ-CLI" in vm_ports:
-        agent_out, _, _ = ssh_exec(vm_ports["HQ-CLI"], "systemctl list-units --type=service --state=running | grep -i -E '(acronis|cyber|backup)' 2>/dev/null", "root", "toor")
+        agent_out, _, _ = ssh_exec(vm_ports["HQ-CLI"],
+            "systemctl is-active acronis_mms 2>/dev/null || systemctl is-active cyber-protect 2>/dev/null || systemctl is-active acronis_service 2>/dev/null",
+            "root", "toor")
         log_msg("[HQ-CLI] Проверка агента резервного копирования")
         safe_log_output(log_lines, "[HQ-CLI] Вывод", agent_out, "")
-        if not agent_out:
+        if not (agent_out and "active" in agent_out):
             log_msg("❌ Агент резервного копирования не найден на HQ-CLI")
             backup_ok = False
         else:
             log_msg("✅ Агент резервного копирования активен на HQ-CLI")
 
         # Проверяем директорию /backup
-        backup_dir, _, _ = ssh_exec(vm_ports["HQ-CLI"], "ls -la /backup/ 2>/dev/null", "root", "toor")
-        log_msg("[HQ-CLI] Выполняется команда: ls -la /backup/")
+        backup_dir, _, _ = ssh_exec(vm_ports["HQ-CLI"], "test -d /backup && ls /backup/", "root", "toor")
+        log_msg("[HQ-CLI] Выполняется команда: test -d /backup && ls /backup/")
         safe_log_output(log_lines, "[HQ-CLI] Вывод", backup_dir, "")
         if not backup_dir:
             log_msg("❌ Директория /backup не найдена на HQ-CLI")

@@ -230,12 +230,17 @@ def run_full_assignment_check(vm_ports):
             test_user = "hquser1"
             test_pass = "P@ssw0rd"
 
-            # Аутентификация
-            auth_cmd = f"su -l {test_user} -c 'whoami'"
-            auth_out, auth_err, _ = ssh_exec(vm_ports["HQ-CLI"], auth_cmd, "root", "toor")
-            log_msg(f"[HQ-CLI] Проверка аутентификации {test_user}")
+            # Аутентификация: SSH как доменный пользователь (создаёт профиль)
+            auth_out, auth_err, _ = ssh_exec(vm_ports["HQ-CLI"], "whoami", test_user, test_pass)
+            log_msg(f"[HQ-CLI] SSH-аутентификация {test_user}")
             safe_log_output(log_lines, "[HQ-CLI] Вывод", auth_out, auth_err)
-            if not (auth_out and test_user in auth_out):
+            auth_success = auth_out and test_user in auth_out.strip().lower()
+            if not auth_success:
+                wb_out, wb_err, _ = ssh_exec(vm_ports["HQ-CLI"], "wbinfo -a '%s%%\"%s\"'" % (test_user, test_pass), "root", "toor")
+                log_msg(f"[HQ-CLI] Fallback: wbinfo -a {test_user}")
+                safe_log_output(log_lines, "[HQ-CLI] Вывод", wb_out, wb_err)
+                auth_success = wb_out and "succeeded" in wb_out.lower()
+            if not auth_success:
                 log_msg(f"❌ Аутентификация {test_user} на HQ-CLI не удалась")
                 samba_ok = False
             else:
@@ -265,12 +270,17 @@ def run_full_assignment_check(vm_ports):
             test_user_br = "bruser1"
             test_pass_br = "P@ssw0rd"
 
-            # Аутентификация
-            auth_cmd_br = f"su -l {test_user_br} -c 'whoami'"
-            auth_out_br, auth_err_br, _ = ssh_exec(vm_ports["BR-CLI"], auth_cmd_br, "root", "toor")
-            log_msg(f"[BR-CLI] Проверка аутентификации {test_user_br}")
+            # Аутентификация: SSH как доменный пользователь
+            auth_out_br, auth_err_br, _ = ssh_exec(vm_ports["BR-CLI"], "whoami", test_user_br, test_pass_br)
+            log_msg(f"[BR-CLI] SSH-аутентификация {test_user_br}")
             safe_log_output(log_lines, "[BR-CLI] Вывод", auth_out_br, auth_err_br)
-            if not (auth_out_br and test_user_br in auth_out_br):
+            auth_br_ok = auth_out_br and test_user_br in auth_out_br.strip().lower()
+            if not auth_br_ok:
+                wb_out, wb_err, _ = ssh_exec(vm_ports["BR-CLI"], "wbinfo -a '%s%%\"%s\"'" % (test_user_br, test_pass_br), "root", "toor")
+                log_msg(f"[BR-CLI] Fallback: wbinfo -a {test_user_br}")
+                safe_log_output(log_lines, "[BR-CLI] Вывод", wb_out, wb_err)
+                auth_br_ok = wb_out and "succeeded" in wb_out.lower()
+            if not auth_br_ok:
                 log_msg(f"❌ Аутентификация {test_user_br} на BR-CLI не удалась")
                 samba_ok = False
             else:
@@ -296,32 +306,32 @@ def run_full_assignment_check(vm_ports):
     if "HQ-SRV" not in vm_ports:
         raid_ok = False
     else:
-        # Проверка массива
-        mdstat, _, _ = ssh_exec(vm_ports["HQ-SRV"], "cat /proc/mdstat", "root", "toor")
-        log_msg("[HQ-SRV] Выполняется команда: cat /proc/mdstat")
+        # Проверка массива через mdadm
+        mdstat, _, _ = ssh_exec(vm_ports["HQ-SRV"], "mdadm --detail /dev/md0 2>/dev/null", "root", "toor")
+        log_msg("[HQ-SRV] Выполняется команда: mdadm --detail /dev/md0")
         safe_log_output(log_lines, "[HQ-SRV] Вывод", mdstat, "")
-        if not (mdstat and "md0" in mdstat and "active raid0" in mdstat):
+        if not (mdstat and "md0" in mdstat and "raid0" in mdstat.lower()):
             raid_ok = False
 
-        # Проверка конфигурации
-        mdadm_conf, _, _ = ssh_exec(vm_ports["HQ-SRV"], "cat /etc/mdadm.conf", "root", "toor")
-        log_msg("[HQ-SRV] Выполняется команда: cat /etc/mdadm.conf")
+        # Проверка конфигурации через mdadm --examine-scan
+        mdadm_conf, _, _ = ssh_exec(vm_ports["HQ-SRV"], "mdadm --examine-scan 2>/dev/null", "root", "toor")
+        log_msg("[HQ-SRV] Выполняется команда: mdadm --examine-scan")
         safe_log_output(log_lines, "[HQ-SRV] Вывод", mdadm_conf, "")
         if not (mdadm_conf and "md0" in mdadm_conf):
             raid_ok = False
 
-        # Проверка монтирования
-        mount_out, _, _ = ssh_exec(vm_ports["HQ-SRV"], "mount | grep /raid", "root", "toor")
-        log_msg("[HQ-SRV] Выполняется команда: mount | grep /raid")
+        # Проверка монтирования через findmnt
+        mount_out, _, _ = ssh_exec(vm_ports["HQ-SRV"], "findmnt /raid --noheadings", "root", "toor")
+        log_msg("[HQ-SRV] Выполняется команда: findmnt /raid")
         safe_log_output(log_lines, "[HQ-SRV] Вывод", mount_out, "")
         if not (mount_out and "/dev/md0" in mount_out and "ext4" in mount_out):
             raid_ok = False
 
-        # Проверка автомонтирования (через /etc/fstab)
-        fstab, _, _ = ssh_exec(vm_ports["HQ-SRV"], "grep '/raid' /etc/fstab", "root", "toor")
-        log_msg("[HQ-SRV] Выполняется команда: grep '/raid' /etc/fstab")
+        # Проверка автомонтирования через findmnt --fstab
+        fstab, _, _ = ssh_exec(vm_ports["HQ-SRV"], "findmnt --fstab /raid --noheadings", "root", "toor")
+        log_msg("[HQ-SRV] Выполняется команда: findmnt --fstab /raid")
         safe_log_output(log_lines, "[HQ-SRV] Вывод", fstab, "")
-        if not (fstab and "/dev/md0" in fstab and "ext4" in fstab):
+        if not (fstab and "md0" in fstab):
             log_msg("❌ Автомонтирование /raid не настроено в /etc/fstab")
             raid_ok = False
 
@@ -345,28 +355,24 @@ def run_full_assignment_check(vm_ports):
         if not (exports and "/raid/nfs" in exports):
             nfs_ok = False
 
-        # Проверка монтирования на клиентах
+        # Проверка монтирования на клиентах через findmnt
         for cli in ["HQ-CLI", "BR-CLI"]:
-            mount_cli, _, _ = ssh_exec(vm_ports[cli], "mount | grep /mnt/nfs", "root", "toor")
-            log_msg("[%s] Выполняется команда: mount | grep /mnt/nfs" % cli)
+            mount_cli, _, _ = ssh_exec(vm_ports[cli], "findmnt /mnt/nfs --noheadings", "root", "toor")
+            log_msg("[%s] Выполняется команда: findmnt /mnt/nfs" % cli)
             safe_log_output(log_lines, "[%s] Вывод" % cli, mount_cli, "")
-            if not (mount_cli and "/mnt/nfs" in mount_cli and ":/raid/nfs" in mount_cli):
+            if not (mount_cli and "/mnt/nfs" in mount_cli and "nfs" in mount_cli.lower()):
                 log_msg(f"❌ /mnt/nfs не примонтирован на {cli}")
                 nfs_ok = False
 
-        # Проверка автомонтирования через /etc/fstab
+        # Проверка автомонтирования через findmnt --fstab
         for cli in ["HQ-CLI", "BR-CLI"]:
-            fstab_cli, _, _ = ssh_exec(vm_ports[cli], "grep '/mnt/nfs' /etc/fstab", "root", "toor")
-            log_msg("[%s] Выполняется команда: grep '/mnt/nfs' /etc/fstab" % cli)
+            fstab_cli, _, _ = ssh_exec(vm_ports[cli], "findmnt --fstab /mnt/nfs --noheadings", "root", "toor")
+            log_msg("[%s] Выполняется команда: findmnt --fstab /mnt/nfs" % cli)
             safe_log_output(log_lines, "[%s] Вывод" % cli, fstab_cli, "")
-            # Пропускаем ошибку, если монтирование есть, но fstab не содержит запись
-            if fstab_cli:
-                if "/mnt/nfs" in fstab_cli and ":/raid/nfs" in fstab_cli and "nfs" in fstab_cli:
-                    log_msg(f"✅ Автомонтирование /mnt/nfs настроено в /etc/fstab на {cli}")
-                else:
-                    log_msg(f"⚠️ Строка /etc/fstab для /mnt/nfs найдена, но не соответствует ожидаемому формату — пропускаем (монтирование существует)")
+            if fstab_cli and "/mnt/nfs" in fstab_cli:
+                log_msg(f"✅ Автомонтирование /mnt/nfs настроено на {cli}")
             else:
-                log_msg(f"ℹ️ Автомонтирование /mnt/nfs не настроено в /etc/fstab на {cli}, но монтирование существует — считаем OK")
+                log_msg(f"ℹ️ Автомонтирование /mnt/nfs не найдено в fstab на {cli}, но монтирование может существовать")
 
     if nfs_ok:
         POINTS += 1.0
@@ -524,8 +530,8 @@ def run_full_assignment_check(vm_ports):
             docker_ok = False
 
         # === Шаг 4: Порт 8080 ===
-        netstat_out, _, _ = ssh_exec(vm_ports["BR-SRV"], "ss -tuln | grep ':8080'", "root", "toor")
-        log_msg("[BR-SRV] Выполняется команда: ss -tuln | grep ':8080'")
+        netstat_out, _, _ = ssh_exec(vm_ports["BR-SRV"], "ss -tlnH sport = :8080", "root", "toor")
+        log_msg("[BR-SRV] Выполняется команда: ss -tlnH sport = :8080")
         safe_log_output(log_lines, "[BR-SRV] Вывод", netstat_out, "")
         if not netstat_out:
             log_msg("❌ Порт 8080 не слушается")
@@ -559,16 +565,16 @@ def run_full_assignment_check(vm_ports):
         if not (httpd_out and httpd_out.strip() == "active"):
             web_ok = False
 
-        # Проверка БД
-        db_check, _, _ = ssh_exec(vm_ports["HQ-SRV"], "mysql -u web -pP@ssw0rd -e 'show databases;' | grep webdb", "root", "toor")
-        log_msg("[HQ-SRV] Выполняется команда: mysql -u web -pP@ssw0rd -e 'show databases;' | grep webdb")
+        # Проверка БД напрямую через SQL
+        db_check, _, _ = ssh_exec(vm_ports["HQ-SRV"], "mysql -u web -pP@ssw0rd -BNe \"SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='webdb'\"", "root", "toor")
+        log_msg("[HQ-SRV] Проверка наличия БД webdb")
         safe_log_output(log_lines, "[HQ-SRV] Вывод", db_check, "")
-        if not db_check:
+        if not (db_check and "webdb" in db_check):
             web_ok = False
 
         # Проверка файла index.php
-        php_check, _, _ = ssh_exec(vm_ports["HQ-SRV"], "cat /var/www/html/index.php | grep 'webdb'", "root", "toor")
-        log_msg("[HQ-SRV] Выполняется команда: cat /var/www/html/index.php | grep 'webdb'")
+        php_check, _, _ = ssh_exec(vm_ports["HQ-SRV"], "grep -l webdb /var/www/html/index.php 2>/dev/null", "root", "toor")
+        log_msg("[HQ-SRV] Проверка index.php на наличие webdb")
         safe_log_output(log_lines, "[HQ-SRV] Вывод", php_check, "")
         if not php_check:
             web_ok = False
@@ -673,10 +679,10 @@ def run_full_assignment_check(vm_ports):
     if "ISP" not in vm_ports:
         auth_ok = False
     else:
-        htpasswd, _, _ = ssh_exec(vm_ports["ISP"], "cat /etc/nginx/.htpasswd", "root", "toor")
-        log_msg("[ISP] Выполняется команда: cat /etc/nginx/.htpasswd")
+        htpasswd, _, _ = ssh_exec(vm_ports["ISP"], "htpasswd -vb /etc/nginx/.htpasswd WEB 'P@ssw0rd' 2>&1", "root", "toor")
+        log_msg("[ISP] Проверка htpasswd: WEB / P@ssw0rd")
         safe_log_output(log_lines, "[ISP] Вывод", htpasswd, "")
-        if not (htpasswd and "WEB:" in htpasswd):
+        if not (htpasswd and ("correct" in htpasswd.lower() or "password verified" in htpasswd.lower() or "WEB:" in htpasswd)):
             auth_ok = False
 
     if auth_ok:

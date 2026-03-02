@@ -195,21 +195,20 @@ def run_full_assignment_check(vm_ports):
     ssh_ok_count, ssh_total = 0, 0
     for srv in ["HQ-SRV", "BR-SRV"]:
         if srv not in vm_ports: continue
-        cfg = None
-        for p in ["/etc/openssh/sshd_config", "/etc/ssh/sshd_config"]:
-            o, e, _ = ssh_exec(vm_ports[srv], "cat %s" % p, *get_srv_creds(srv))
-            if o and "No such file" not in (e or ""): cfg = o; break
+        cfg, e, _ = ssh_exec(vm_ports[srv], "sshd -T 2>/dev/null", *get_srv_creds(srv))
+        safe_log_output(log_lines, "[%s] sshd -T" % srv, cfg)
         if not cfg: continue
-        for check_name, pattern in [("Port 2026", r'^\s*Port\s+2026'), ("MaxAuthTries", r'^\s*MaxAuthTries\s+2'),
-                                     ("AllowUsers", r'^\s*AllowUsers')]:
+        for check_name, pattern in [("Port 2026", r'^port\s+2026'), ("MaxAuthTries", r'^maxauthtries\s+2'),
+                                     ("AllowUsers", r'^allowusers\s+')]:
             ssh_total += 1
-            if any(re.match(pattern, l) for l in cfg.split('\n')): ssh_ok_count += 1
+            if any(re.match(pattern, l.strip().lower()) for l in cfg.split('\n')): ssh_ok_count += 1
         ssh_total += 1
         for line in cfg.split('\n'):
-            if re.match(r'^\s*Banner\s+', line):
-                bp = line.split()[1] if len(line.split()) >= 2 else ""
-                bo, _, _ = ssh_exec(vm_ports[srv], "cat %s" % bp, *get_srv_creds(srv))
-                if bo and "authorized access only" in bo.lower(): ssh_ok_count += 1; break
+            if line.strip().lower().startswith('banner '):
+                bp = line.strip().split(None, 1)[1] if len(line.strip().split()) >= 2 else ""
+                if bp and bp != "none":
+                    bo, _, _ = ssh_exec(vm_ports[srv], "test -f %s && cat %s" % (bp, bp), *get_srv_creds(srv))
+                    if bo and "authorized access only" in bo.lower(): ssh_ok_count += 1; break
     if ssh_total > 0 and ssh_ok_count >= ssh_total - 1: award("КО-5: SSH", 1, 1)
     else: award("КО-5: SSH", 0, 1)
 
@@ -356,7 +355,7 @@ def run_full_assignment_check(vm_ports):
     tz_ok = 0
     for srv in ["HQ-SRV", "BR-SRV", "HQ-CLI", "BR-CLI"]:
         if srv not in vm_ports: continue
-        out, _, _ = ssh_exec(vm_ports[srv], "timedatectl | grep 'Time zone'", *get_srv_creds(srv))
+        out, _, _ = ssh_exec(vm_ports[srv], "timedatectl show -p Timezone --value 2>/dev/null || timedatectl status", *get_srv_creds(srv))
         safe_log_output(log_lines, "[%s] tz" % srv, out)
         if out and "Moscow" in out: tz_ok += 1
     if tz_ok >= 2: award("КО-12: Время", 1, 1)

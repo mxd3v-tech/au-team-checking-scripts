@@ -381,27 +381,23 @@ def run_full_assignment_check(vm_ports):
         if srv not in vm_ports:
             continue
         dev_name = DEVICE_NAMES[srv]
-        config_content = None
-        for path in ["/etc/openssh/sshd_config", "/etc/ssh/sshd_config"]:
-            out, err, cmd = ssh_exec(vm_ports[srv], "cat %s" % path, *get_srv_creds(srv))
-            if out is not None and "Permission denied" not in (err or "") and "No such file" not in (err or ""):
-                config_content = out
-                log_msg("[%s] Выполняется команда: cat %s" % (dev_name, path))
-                full_out = (out or "") + ("\n" + err if err else "")
-                log_msg("[Вывод]\n%s\n" % full_out)
-                break
+        # sshd -T выводит эффективную конфигурацию без комментариев
+        config_content, err, cmd = ssh_exec(vm_ports[srv], "sshd -T 2>/dev/null", *get_srv_creds(srv))
+        log_msg("[%s] Выполняется команда: sshd -T" % dev_name)
+        full_out = (config_content or "") + ("\n" + err if err else "")
+        log_msg("[Вывод]\n%s\n" % full_out)
         if config_content is None:
             ssh_ok = False
             continue
-        max_auth = any('MaxAuthTries' in line and '2' in line and not line.strip().startswith('#') for line in config_content.split('\n'))
+        max_auth = any(line.strip().lower().startswith('maxauthtries') and '2' in line for line in config_content.split('\n'))
         banner_ok = False
         for line in config_content.split('\n'):
-            if 'Banner' in line and not line.strip().startswith('#'):
-                parts = line.split()
-                if len(parts) >= 2:
-                    banner_path = parts[1]
-                    banner_out, _, cmd_banner = ssh_exec(vm_ports[srv], "cat %s" % banner_path, *get_srv_creds(srv))
-                    log_msg("[%s] Выполняется команда: cat %s" % (dev_name, banner_path))
+            stripped = line.strip().lower()
+            if stripped.startswith('banner '):
+                banner_path = line.strip().split(None, 1)[1]
+                if banner_path and banner_path != "none":
+                    banner_out, _, cmd_banner = ssh_exec(vm_ports[srv], "test -f %s && cat %s" % (banner_path, banner_path), *get_srv_creds(srv))
+                    log_msg("[%s] Проверка баннера: %s" % (dev_name, banner_path))
                     full_banner = (banner_out or "") + ("\n" + _ if _ else "")
                     log_msg("[Вывод]\n%s\n" % full_banner)
                     if banner_out and "authorized access only" in banner_out.lower():

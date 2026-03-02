@@ -460,7 +460,7 @@ def run_full_assignment_check(vm_ports):
 
         cond1 = out1 is not None and "is up" in out1
         cond2 = out2 is not None and "gre" in out2
-        cond3 = ping_out is not None and "3 packets transmitted, 3 received" in ping_out
+        cond3 = ping_out is not None and "Success rate is 100 percent" in ping_out
 
         if cond1 and cond2 and cond3:
             log_msg("✅ %s: GRE-туннель работает" % dev_name)

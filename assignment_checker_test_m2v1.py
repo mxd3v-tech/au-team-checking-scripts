@@ -247,8 +247,8 @@ def run_full_assignment_check(vm_ports):
                 # Проверка разрешённых команд (cat, grep, id)
                 allowed_commands = ["cat /etc/passwd", "grep root /etc/passwd", "id"]
                 for cmd in allowed_commands:
-                    full_cmd = f"su -l {test_user} -c 'echo \"{test_pass}\" | sudo -S {cmd}'"
-                    out, err, _ = ssh_exec(vm_ports["HQ-CLI"], full_cmd, "root", "toor")
+                    full_cmd = "echo '%s' | sudo -S %s" % (test_pass, cmd)
+                    out, err, _ = ssh_exec(vm_ports["HQ-CLI"], full_cmd, test_user, test_pass)
                     log_msg(f"[HQ-CLI] Проверка разрешённой команды: {cmd}")
                     safe_log_output(log_lines, "[HQ-CLI] Вывод", out, err)
                     if not out or "Permission denied" in err or "password is required" in err:
@@ -257,8 +257,8 @@ def run_full_assignment_check(vm_ports):
 
                 # Проверка запрещённой команды (ps)
                 forbidden_cmd = "ps aux"
-                full_forbidden = f"su -l {test_user} -c 'echo \"{test_pass}\" | sudo -S {forbidden_cmd}'"
-                out_f, err_f, _ = ssh_exec(vm_ports["HQ-CLI"], full_forbidden, "root", "toor")
+                full_forbidden = "echo '%s' | sudo -S %s" % (test_pass, forbidden_cmd)
+                out_f, err_f, _ = ssh_exec(vm_ports["HQ-CLI"], full_forbidden, test_user, test_pass)
                 log_msg(f"[HQ-CLI] Проверка запрещённой команды: {forbidden_cmd}")
                 safe_log_output(log_lines, "[HQ-CLI] Вывод", out_f, err_f)
                 if out_f and "UID" in out_f:
@@ -285,8 +285,8 @@ def run_full_assignment_check(vm_ports):
                 samba_ok = False
             else:
                 # Попытка выполнить sudo (должна завершиться ошибкой)
-                sudo_test = f"su -l {test_user_br} -c 'echo \"{test_pass_br}\" | sudo -S cat /etc/passwd'"
-                out_br, err_br, _ = ssh_exec(vm_ports["BR-CLI"], sudo_test, "root", "toor")
+                sudo_test = "echo '%s' | sudo -S cat /etc/passwd" % test_pass_br
+                out_br, err_br, _ = ssh_exec(vm_ports["BR-CLI"], sudo_test, test_user_br, test_pass_br)
                 log_msg(f"[BR-CLI] Проверка запрета sudo для {test_user_br}")
                 safe_log_output(log_lines, "[BR-CLI] Вывод", out_br, err_br)
                 if out_br and "root:" in out_br:

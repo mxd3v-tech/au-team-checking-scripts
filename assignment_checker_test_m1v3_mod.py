@@ -70,11 +70,11 @@ def validate_ip_in_allowed_ranges(ip_str, prefixlen):
     except: return False, "Некорректный IP"
     if ip.is_loopback: return False, "Loopback"
     zones = [
-        {"name": "HQ-SRV/VLAN100", "network": "10.10.100.0/24", "min_prefixlen": 27},
-        {"name": "HQ-CLI/VLAN200", "network": "10.10.200.0/27", "min_prefixlen": 28},
-        {"name": "Management", "network": "10.10.30.0/28", "min_prefixlen": 29},
-        {"name": "BR-SRV", "network": "10.20.20.0/26", "min_prefixlen": 28},
-        {"name": "BR-CLI", "network": "10.20.30.0/26", "min_prefixlen": 29},
+        {"name": "HQ-SRV/VLAN120", "network": "192.168.100.0/24", "min_prefixlen": 27},
+        {"name": "HQ-CLI/VLAN220", "network": "192.168.200.0/27", "min_prefixlen": 28},
+        {"name": "Management", "network": "192.168.30.0/28", "min_prefixlen": 29},
+        {"name": "BR-SRV", "network": "192.168.20.0/26", "min_prefixlen": 28},
+        {"name": "BR-CLI", "network": "192.168.35.0/26", "min_prefixlen": 29},
     ]
     for z in zones:
         net = ipaddress.IPv4Network(z["network"], strict=False)
@@ -102,7 +102,7 @@ def run_full_assignment_check(vm_ports):
         log_msg("%s %s: %d/%d%s" % (icon, name, score, max_score, " — " + details if details else ""))
 
     log_msg("\n🔍 SSH-порты:"); [log_msg("  %s: %s" % (d, p)) for d, p in sorted(vm_ports.items())]
-    log_msg("\n🔍 Модуль 1 (M1-V1), КО 09.02.06-1-2026\n")
+    log_msg("\n🔍 Модуль 1 (M1-V3), КО 09.02.06-1-2026\n")
 
     FQDN = {"HQ-SRV": "hq-srv.au-team.irpo", "BR-SRV": "br-srv.au-team.irpo",
             "HQ-CLI": "hq-cli.au-team.irpo", "BR-CLI": "br-cli.au-team.irpo",
@@ -174,17 +174,17 @@ def run_full_assignment_check(vm_ports):
     for srv in ["HQ-SRV", "BR-SRV"]:
         if srv not in vm_ports: continue
         acc_total += 1
-        out, _, _ = ssh_exec(vm_ports[srv], "id -u sshuser", "sshuser", "P@ssw0rd")
-        safe_log_output(log_lines, "[%s] id sshuser" % srv, out)
-        out2, _, _ = ssh_exec(vm_ports[srv], "sudo -n id", "sshuser", "P@ssw0rd")
+        out, _, _ = ssh_exec(vm_ports[srv], "id -u sshadmin", "sshadmin", "P@ssw0rd")
+        safe_log_output(log_lines, "[%s] id sshadmin" % srv, out)
+        out2, _, _ = ssh_exec(vm_ports[srv], "sudo -n id", "sshadmin", "P@ssw0rd")
         safe_log_output(log_lines, "[%s] sudo" % srv, out2)
-        if (out and out.strip() == "2026") and (out2 and "uid=0(root)" in out2): acc_ok += 1
+        if (out and out.strip() == "1025") and (out2 and "uid=0(root)" in out2): acc_ok += 1
     for rtr in ["HQ-RTR", "BR-RTR"]:
         if rtr not in vm_ports: continue
         acc_total += 1
         out, _, _ = rtr_exec(vm_ports[rtr], *get_rtr_creds(rtr), "show users localdb")
         safe_log_output(log_lines, "[%s] users" % rtr, out)
-        if out and "net_admin" in out: acc_ok += 1
+        if out and "admin_net" in out: acc_ok += 1
 
     if acc_ok >= acc_total and acc_total > 0: award("КО-4: Учётные записи", 2, 2)
     elif acc_ok >= acc_total - 1 and acc_total > 0: award("КО-4: Учётные записи", 1, 2)
@@ -208,7 +208,7 @@ def run_full_assignment_check(vm_ports):
                 bp = line.strip().split(None, 1)[1] if len(line.strip().split()) >= 2 else ""
                 if bp and bp != "none":
                     bo, _, _ = ssh_exec(vm_ports[srv], "test -f %s && cat %s" % (bp, bp), *get_srv_creds(srv))
-                    if bo and "authorized access only" in bo.lower(): ssh_ok_count += 1; break
+                    if bo and "for authorized access only" in bo.lower(): ssh_ok_count += 1; break
     if ssh_total > 0 and ssh_ok_count >= ssh_total - 1: award("КО-5: SSH", 1, 1)
     else: award("КО-5: SSH", 0, 1)
 
@@ -241,7 +241,7 @@ def run_full_assignment_check(vm_ports):
         o3, _, _ = rtr_exec(vm_ports[rtr], *get_rtr_creds(rtr), "show ip ospf neighbor")
         safe_log_output(log_lines, "[%s] neighbor" % rtr, o3)
         if o1 and "authentication message-digest" in o1 and "md5" in o1: ospf_total += 1
-        if o2 and ("10.10.100.0" in o2 or "10.20.20.0" in o2): ospf_total += 1
+        if o2 and ("192.168.100.0" in o2 or "192.168.20.0" in o2): ospf_total += 1
         if o3:
             for line in o3.split('\n'):
                 if 'tunnel.0' in line and ('Full/DR' in line or 'Full/Backup' in line): ospf_total += 1; break
@@ -283,7 +283,7 @@ def run_full_assignment_check(vm_ports):
                 m = re.search(r'(\d+\.\d+\.\d+\.\d+)-(\d+\.\d+\.\d+\.\d+)', o2)
                 if m:
                     try:
-                        net = ipaddress.IPv4Network("10.10.200.0/27", strict=False)
+                        net = ipaddress.IPv4Network("192.168.200.0/27", strict=False)
                         if ipaddress.IPv4Address(m.group(1)) in net and ipaddress.IPv4Address(m.group(2)) in net: checks["pool"] = True
                     except: pass
             ip_out, _, _ = ssh_exec(vm_ports["HQ-CLI"], "ip addr show ens3", *get_srv_creds("HQ-CLI"))
@@ -292,7 +292,7 @@ def run_full_assignment_check(vm_ports):
                 dm = re.search(r'inet\s+(\d+\.\d+\.\d+\.\d+)/\d+.*dynamic', ip_out)
                 if dm:
                     try:
-                        if ipaddress.IPv4Address(dm.group(1)) in ipaddress.IPv4Network("10.10.200.0/27", strict=False): checks["client"] = True
+                        if ipaddress.IPv4Address(dm.group(1)) in ipaddress.IPv4Network("192.168.200.0/27", strict=False): checks["client"] = True
                     except: pass
         ok = sum(1 for v in checks.values() if v)
         if ok == 3: dhcp_score = 2
@@ -362,7 +362,7 @@ def run_full_assignment_check(vm_ports):
     else: award("КО-12: Время", 0, 1)
 
     # ==== ИТОГО ====
-    log_msg("\n📊 ИТОГО (M1-V1, КО 09.02.06-1-2026):"); log_msg("=" * 60)
+    log_msg("\n📊 ИТОГО (M1-V3, КО 09.02.06-1-2026):"); log_msg("=" * 60)
     for item, d in results.items():
         icon = "✅" if d["score"] == d["max"] else ("⚠️" if d["score"] > 0 else "❌")
         log_msg("%s %s: %d/%d" % (icon, item, d["score"], d["max"]))

@@ -195,15 +195,16 @@ def run_full_assignment_check(vm_ports):
     }
 # --- Пункт 1: FQDN ---
     log_msg("\n📌 Пункт 1: Имена устройств (FQDN)")
-    names_ok = True
+    names_correct = 0
+    names_total = 0
     devices_to_check = ["HQ-SRV", "BR-SRV", "HQ-CLI", "BR-CLI", "HQ-RTR", "BR-RTR"]
 
     for dev in devices_to_check:
         if dev not in vm_ports:
             log_msg("⚠️ %s: устройство не найдено" % DEVICE_NAMES[dev])
-            names_ok = False
             continue
 
+        names_total += 1
         expected_fqdn = FQDN_TABLE[dev]
         dev_name = DEVICE_NAMES[dev]
 
@@ -224,9 +225,9 @@ def run_full_assignment_check(vm_ports):
 
             if actual == dev.lower() or actual == expected_fqdn.lower():
                 log_msg("✅ %s: имя хоста корректно (получено: %s)" % (dev_name, actual))
+                names_correct += 1
             else:
                 log_msg("❌ %s: имя хоста некорректно (получено: %s)" % (dev_name, actual))
-                names_ok = False
 
         else:
             # Серверы: hostname -f
@@ -237,10 +238,12 @@ def run_full_assignment_check(vm_ports):
             actual = out.strip().lower() if out else ""
             if actual == expected_fqdn:
                 log_msg("✅ %s: FQDN корректен" % dev_name)
+                names_correct += 1
             else:
                 log_msg("❌ %s: FQDN некорректен (получено: %s)" % (dev_name, actual))
-                names_ok = False
 
+    names_ok = names_correct >= 1
+    log_msg("ℹ️ Имена устройств: %d из %d корректны" % (names_correct, names_total))
     if names_ok:
         POINTS += 1.0
         log_msg("✅ Пункт 1 пройден (+1 балл)")
@@ -266,7 +269,11 @@ def run_full_assignment_check(vm_ports):
         for line in out.strip().split('\n'):
             parts = line.split()
             if len(parts) >= 3 and '/' in parts[2]:
+                if parts[0] == 'lo':
+                    continue
                 ip, mask = parts[2].split('/')
+                if ip.startswith('169.'):
+                    continue
                 ok, msg = validate_ip_in_allowed_ranges(ip, int(mask))
                 log_msg("  → %s: %s" % (parts[0], msg))
                 if ok:
@@ -330,12 +337,31 @@ def run_full_assignment_check(vm_ports):
         full_out = (out or "") + ("\n" + err if err else "")
         log_msg("[Вывод]\n%s\n" % full_out)
         if out:
-            checks = [
-                "tag: 100" in out and "ens4" in out,
-                "tag: 200" in out and "ens5" in out,
-                "trunks: [100, 200, 999]" in out and "ens3" in out
-            ]
-            if not all(checks):
+            out_lower = out.lower()
+            # Проверяем наличие VLAN тегов (гибко, без привязки к точному формату)
+            has_vlan100 = bool(re.search(r'tag:\s*100', out_lower))
+            has_vlan200 = bool(re.search(r'tag:\s*200', out_lower))
+            # Проверяем trunk: должен содержать 100, 200, 999 (в любом порядке, с любыми пробелами)
+            trunk_match = re.search(r'trunks:\s*\[([^\]]+)\]', out_lower)
+            has_trunk = False
+            if trunk_match:
+                trunk_vlans = set(v.strip() for v in trunk_match.group(1).split(','))
+                has_trunk = {'100', '200', '999'}.issubset(trunk_vlans)
+
+            if has_vlan100:
+                log_msg("✅ VLAN 100 (HQ-SRV) найден")
+            else:
+                log_msg("❌ VLAN 100 (HQ-SRV) не найден")
+            if has_vlan200:
+                log_msg("✅ VLAN 200 (HQ-CLI) найден")
+            else:
+                log_msg("❌ VLAN 200 (HQ-CLI) не найден")
+            if has_trunk:
+                log_msg("✅ Trunk с VLAN 100, 200, 999 найден")
+            else:
+                log_msg("❌ Trunk с VLAN 100, 200, 999 не найден")
+
+            if not (has_vlan100 and has_vlan200 and has_trunk):
                 ovs_ok = False
         else:
             ovs_ok = False

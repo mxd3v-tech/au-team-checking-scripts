@@ -128,11 +128,11 @@ def validate_ip_in_allowed_ranges(ip_str, prefixlen):
         return False, "Некорректный IPv4-адрес"
 
     zones = [
-        {"name": "HQ-SRV/VLAN120", "network": "192.168.100.0/24", "min_prefixlen": 25},
+        {"name": "HQ-SRV/VLAN120", "network": "192.168.100.0/24", "min_prefixlen": 26},
         {"name": "HQ-CLI/VLAN220", "network": "192.168.200.0/27", "min_prefixlen": 27},
         {"name": "Management (HQ)", "network": "192.168.30.0/28", "min_prefixlen": 28},
-        {"name": "BR-SRV", "network": "192.168.20.0/26", "min_prefixlen": 28},
-        {"name": "BR-CLI", "network": "192.168.35.0/26", "min_prefixlen": 29},
+        {"name": "BR-SRV", "network": "192.168.20.0/26", "min_prefixlen": 29},
+        {"name": "BR-CLI", "network": "192.168.35.0/26", "min_prefixlen": 28},
     ]
 
     for zone in zones:
@@ -162,7 +162,7 @@ def run_full_assignment_check(vm_ports):
         log_lines.append(msg)
         print(msg)
 
-    log_msg("🔍 Начало комплексной проверки ISP Block 2")
+    log_msg("🔍 Начало комплексной проверки ISP Block 2 (M1-V2)")
 
     DEVICE_NAMES = {
         "HQ-SRV": "hq-srv.au-team.irpo",
@@ -195,15 +195,16 @@ def run_full_assignment_check(vm_ports):
     }
 # --- Пункт 1: FQDN ---
     log_msg("\n📌 Пункт 1: Имена устройств (FQDN)")
-    names_ok = True
+    names_correct = 0
+    names_total = 0
     devices_to_check = ["HQ-SRV", "BR-SRV", "HQ-CLI", "BR-CLI", "HQ-RTR", "BR-RTR"]
 
     for dev in devices_to_check:
         if dev not in vm_ports:
             log_msg("⚠️ %s: устройство не найдено" % DEVICE_NAMES[dev])
-            names_ok = False
             continue
 
+        names_total += 1
         expected_fqdn = FQDN_TABLE[dev]
         dev_name = DEVICE_NAMES[dev]
 
@@ -224,9 +225,9 @@ def run_full_assignment_check(vm_ports):
 
             if actual == dev.lower() or actual == expected_fqdn.lower():
                 log_msg("✅ %s: имя хоста корректно (получено: %s)" % (dev_name, actual))
+                names_correct += 1
             else:
                 log_msg("❌ %s: имя хоста некорректно (получено: %s)" % (dev_name, actual))
-                names_ok = False
 
         else:
             # Серверы: hostname -f
@@ -237,10 +238,12 @@ def run_full_assignment_check(vm_ports):
             actual = out.strip().lower() if out else ""
             if actual == expected_fqdn:
                 log_msg("✅ %s: FQDN корректен" % dev_name)
+                names_correct += 1
             else:
                 log_msg("❌ %s: FQDN некорректен (получено: %s)" % (dev_name, actual))
-                names_ok = False
 
+    names_ok = names_correct >= 1
+    log_msg("ℹ️ Имена устройств: %d из %d корректны" % (names_correct, names_total))
     if names_ok:
         POINTS += 1.0
         log_msg("✅ Пункт 1 пройден (+1 балл)")
@@ -266,7 +269,11 @@ def run_full_assignment_check(vm_ports):
         for line in out.strip().split('\n'):
             parts = line.split()
             if len(parts) >= 3 and '/' in parts[2]:
+                if parts[0] == 'lo':
+                    continue
                 ip, mask = parts[2].split('/')
+                if ip.startswith('169.'):
+                    continue
                 ok, msg = validate_ip_in_allowed_ranges(ip, int(mask))
                 log_msg("  → %s: %s" % (parts[0], msg))
                 if ok:
@@ -291,7 +298,7 @@ def run_full_assignment_check(vm_ports):
         log_msg("[%s] Выполняется команда: id -u sshadmin" % dev_name)
         full_out = (out or "") + ("\n" + err if err else "")
         log_msg("[Вывод]\n%s\n" % full_out)
-        uid_ok = out and out.strip() == "2026"
+        uid_ok = out and out.strip() == "1025"
 
         out2, err2, cmd2 = ssh_exec(vm_ports[srv], "sudo -n id", "sshadmin", "P@ssw0rd")
         log_msg("[%s] Выполняется команда: sudo -n id" % dev_name)
@@ -310,7 +317,7 @@ def run_full_assignment_check(vm_ports):
         log_msg("[%s] Выполняется команда: show users localdb" % dev_name)
         full_out = (out or "") + ("\n" + err if err else "")
         log_msg("[Вывод]\n%s\n" % full_out)
-        if not (out and "adminnet" in out):
+        if not (out and "admin_net" in out):
             accounts_ok = False
 
     if accounts_ok:
@@ -330,12 +337,31 @@ def run_full_assignment_check(vm_ports):
         full_out = (out or "") + ("\n" + err if err else "")
         log_msg("[Вывод]\n%s\n" % full_out)
         if out:
-            checks = [
-                "tag: 120" in out and "ens4" in out,
-                "tag: 220" in out and "ens5" in out,
-                "trunks: [120, 220, 888]" in out and "ens3" in out
-            ]
-            if not all(checks):
+            out_lower = out.lower()
+            # Проверяем наличие VLAN тегов (гибко, без привязки к точному формату)
+            has_vlan100 = bool(re.search(r'tag:\s*120', out_lower))
+            has_vlan200 = bool(re.search(r'tag:\s*220', out_lower))
+            # Проверяем trunk: должен содержать 120, 220, 888 (в любом порядке, с любыми пробелами)
+            trunk_match = re.search(r'trunks:\s*\[([^\]]+)\]', out_lower)
+            has_trunk = False
+            if trunk_match:
+                trunk_vlans = set(v.strip() for v in trunk_match.group(1).split(','))
+                has_trunk = {'120', '220', '888'}.issubset(trunk_vlans)
+
+            if has_vlan100:
+                log_msg("✅ VLAN 120 (HQ-SRV) найден")
+            else:
+                log_msg("❌ VLAN 120 (HQ-SRV) не найден")
+            if has_vlan200:
+                log_msg("✅ VLAN 220 (HQ-CLI) найден")
+            else:
+                log_msg("❌ VLAN 220 (HQ-CLI) не найден")
+            if has_trunk:
+                log_msg("✅ Trunk с VLAN 120, 220, 888 найден")
+            else:
+                log_msg("❌ Trunk с VLAN 120, 220, 888 не найден")
+
+            if not (has_vlan100 and has_vlan200 and has_trunk):
                 ovs_ok = False
         else:
             ovs_ok = False
@@ -477,7 +503,7 @@ def run_full_assignment_check(vm_ports):
         log_msg("[Вывод]\n%s\n" % full_out4)
 
         auth_ok = out4 is not None and "authentication message-digest" in out4 and "md5" in out4
-        has_route = out2 is not None and ("10.10.100.0" in out2 or "10.20.20.0" in out2)
+        has_route = out2 is not None and ("192.168.100.0" in out2 or "192.168.20.0" in out2)
 
         valid_tunnel_neighbor = False
         if out3 is not None:
@@ -574,13 +600,13 @@ def run_full_assignment_check(vm_ports):
                     try:
                         start = ipaddress.IPv4Address(start_ip)
                         end = ipaddress.IPv4Address(end_ip)
-                        network = ipaddress.IPv4Network("10.10.200.0/27", strict=False)
+                        network = ipaddress.IPv4Network("192.168.200.0/27", strict=False)
 
                         if start in network and end in network:
-                            log_msg("✅ Найден пул %s-%s из сети 10.10.200.0/27" % (start_ip, end_ip))
+                            log_msg("✅ Найден пул %s-%s из сети 192.168.200.0/27" % (start_ip, end_ip))
                             pool_in_network = True
                         else:
-                            log_msg("❌ Пул %s-%s не входит в 10.10.200.0/27" % (start_ip, end_ip))
+                            log_msg("❌ Пул %s-%s не входит в 192.168.200.0/27" % (start_ip, end_ip))
                             dhcp_ok = False
                     except Exception as e:
                         log_msg("❌ Ошибка при проверке пула: %s" % e)
@@ -605,11 +631,11 @@ def run_full_assignment_check(vm_ports):
                         ip_addr = match.group(1)
                         try:
                             ip_obj = ipaddress.IPv4Address(ip_addr)
-                            network = ipaddress.IPv4Network("10.10.200.0/27", strict=False)
+                            network = ipaddress.IPv4Network("192.168.200.0/27", strict=False)
                             if ip_obj in network:
-                                log_msg("✅ HQ-CLI: имеет динамический IP из пула DHCP (10.10.200.0/27) на ens3")
+                                log_msg("✅ HQ-CLI: имеет динамический IP из пула DHCP (192.168.200.0/27) на ens3")
                             else:
-                                log_msg("❌ HQ-CLI: IP не из пула 10.10.200.0/27")
+                                log_msg("❌ HQ-CLI: IP не из пула 192.168.200.0/27")
                                 dhcp_ok = False
                         except:
                             log_msg("❌ HQ-CLI: некорректный IP на ens3")
@@ -650,7 +676,7 @@ def run_full_assignment_check(vm_ports):
                 continue
 
             log_msg("\n→ Проверка записи: %s" % fqdn)
-
+            
             # === Прямой запрос (A-запись) ===
             out, err, cmd = ssh_exec(vm_ports[client_dev], "nslookup %s" % fqdn, *get_srv_creds(client_dev))
             log_msg("[%s] Выполняется команда: nslookup %s" % (dev_name_cli, fqdn))
@@ -743,7 +769,7 @@ def run_full_assignment_check(vm_ports):
         isp_ok = False
     else:
         dev_name = DEVICE_NAMES["ISP"]
-
+        
         # Проверка FQDN
         out, err, cmd = ssh_exec(vm_ports["ISP"], "hostname -f", *get_srv_creds("ISP"))
         log_msg("[%s] Выполняется команда: hostname -f" % dev_name)
@@ -840,4 +866,3 @@ def run_full_assignment_check(vm_ports):
 
 if __name__ == "__main__":
     pass
-

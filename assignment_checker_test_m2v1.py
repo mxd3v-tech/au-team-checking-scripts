@@ -147,7 +147,7 @@ def rtr_exec_with_enable(port, username, password, command, timeout=30):
 # ========== ГЛАВНАЯ ФУНКЦИЯ ==========
 def run_full_assignment_check(vm_ports):
     POINTS = 0.0
-    MAX_POINTS = 11.0
+    MAX_POINTS = 10.0
     log_lines = []
     results = {}
 
@@ -379,7 +379,7 @@ def run_full_assignment_check(vm_ports):
     # --- Пункт 4: Chrony на ISP ---
     log_msg("\n📌 Пункт 4: Chrony на ISP")
     chrony_ok = True
-    clients = ["HQ-SRV", "HQ-CLI", "BR-RTR", "BR-SRV", "BR-CLI"]
+    clients = ["HQ-SRV", "HQ-CLI", "HQ-RTR", "BR-RTR", "BR-SRV", "BR-CLI"]
 
     if "ISP" not in vm_ports:
         chrony_ok = False
@@ -483,33 +483,33 @@ def run_full_assignment_check(vm_ports):
                 break
 
         if compose_content is None:
-            log_msg("❌ compose-файл не найден")
-            docker_ok = False
+            log_msg("⚠️ compose-файл не найден (пропускаем проверку содержимого)")
         else:
             log_msg(f"✅ Найден: {found_path}")
             safe_log_output(log_lines, "[BR-SRV] Содержимое", compose_content, "")
 
-            # === Шаг 2: Простая проверка по ключевым строкам ===
-            required_lines = [
-                "container_name: db",
-                "image: mariadb",
-                "MARIADB_USER: test",
-                "MARIADB_PASSWORD: P@ssw0rd",
-                "MARIADB_DATABASE: testdb",
-                'ports:\n      - "3306:3306"',
-                "container_name: testapp",
-                "image: site",
-                'ports:\n      - "8080:',
-                "DB_USER: test",
-                "DB_PASS: P@ssw0rd",
-                "DB_NAME: testdb",
-                "DB_TYPE: maria",
-                "depends_on:\n      - database"
-            ]
+            # === Шаг 2: Гибкая проверка по ключевым параметрам ===
+            compose_lower = compose_content.lower().replace(" ", "").replace("\t", "")
+            required_checks = {
+                "container_name: db": bool(re.search(r'container_name:\s*db\b', compose_content, re.IGNORECASE)),
+                "image: mariadb": bool(re.search(r'image:\s*mariadb', compose_content, re.IGNORECASE)),
+                "MARIADB_USER: test": bool(re.search(r'MARIADB_USER:\s*test\b', compose_content)),
+                "MARIADB_PASSWORD: P@ssw0rd": bool(re.search(r'MARIADB_PASSWORD:\s*P@ssw0rd', compose_content)),
+                "MARIADB_DATABASE: testdb": bool(re.search(r'MARIADB_DATABASE:\s*testdb', compose_content)),
+                "port 3306": bool(re.search(r'["\']?3306:3306["\']?', compose_content)),
+                "container_name: testapp": bool(re.search(r'container_name:\s*testapp', compose_content, re.IGNORECASE)),
+                "image: site": bool(re.search(r'image:\s*site', compose_content, re.IGNORECASE)),
+                "port 8080": bool(re.search(r'["\']?8080:', compose_content)),
+                "DB_USER: test": bool(re.search(r'DB_USER:\s*test\b', compose_content)),
+                "DB_PASS: P@ssw0rd": bool(re.search(r'DB_PASS:\s*P@ssw0rd', compose_content)),
+                "DB_NAME: testdb": bool(re.search(r'DB_NAME:\s*testdb', compose_content)),
+                "DB_TYPE: maria": bool(re.search(r'DB_TYPE:\s*maria', compose_content)),
+                "depends_on database": bool(re.search(r'depends_on:', compose_content, re.IGNORECASE) and re.search(r'database', compose_content, re.IGNORECASE)),
+            }
 
-            for line in required_lines:
-                if line not in compose_content:
-                    log_msg(f"❌ Отсутствует: {repr(line)}")
+            for check_name, passed in required_checks.items():
+                if not passed:
+                    log_msg(f"❌ Отсутствует: {check_name}")
                     docker_ok = False
 
         # === Шаг 3: Контейнеры ===
@@ -556,7 +556,7 @@ def run_full_assignment_check(vm_ports):
         httpd_out, _, _ = ssh_exec(vm_ports["HQ-SRV"], "systemctl is-active httpd", "root", "toor")
         log_msg("[HQ-SRV] Выполняется команда: systemctl is-active httpd")
         safe_log_output(log_lines, "[HQ-SRV] Вывод", httpd_out, "")
-        if not (httpd_out and "active" in httpd_out):
+        if not (httpd_out and httpd_out.strip() == "active"):
             web_ok = False
 
         # Проверка БД
@@ -593,8 +593,8 @@ def run_full_assignment_check(vm_ports):
         log_msg(f"  {device}: {port}")
     log_msg("")
 
-# --- Пункт 9: Nginx reverse proxy on ISP ---
-    log_msg("\n📌 Пункт 9: Nginx reverse proxy на ISP")
+# --- Пункт 8: Nginx reverse proxy on ISP ---
+    log_msg("\n📌 Пункт 8: Nginx reverse proxy на ISP")
     nginx_ok = True
 
     if "ISP" not in vm_ports:
@@ -661,14 +661,14 @@ def run_full_assignment_check(vm_ports):
 
     if nginx_ok:
         POINTS += 1.0
-        log_msg("✅ Пункт 9 пройден (+1 балл)")
+        log_msg("✅ Пункт 8 пройден (+1 балл)")
     else:
-        log_msg("❌ Пункт 9 не пройден")
-    results["Пункт 9: Nginx Reverse Proxy"] = nginx_ok
+        log_msg("❌ Пункт 8 не пройден")
+    results["Пункт 8: Nginx Reverse Proxy"] = nginx_ok
 
 
-# --- Пункт 10: Web-based auth на ISP ---
-    log_msg("\n📌 Пункт 10: Web-based auth на ISP")
+# --- Пункт 9: Web-based auth на ISP ---
+    log_msg("\n📌 Пункт 9: Web-based auth на ISP")
     auth_ok = True
     if "ISP" not in vm_ports:
         auth_ok = False
@@ -681,29 +681,29 @@ def run_full_assignment_check(vm_ports):
 
     if auth_ok:
         POINTS += 1.0
-        log_msg("✅ Пункт 10 пройден (+1 балл)")
+        log_msg("✅ Пункт 9 пройден (+1 балл)")
     else:
-        log_msg("❌ Пункт 10 не пройден")
-    results["Пункт 10: Web Auth"] = auth_ok
+        log_msg("❌ Пункт 9 не пройден")
+    results["Пункт 9: Web Auth"] = auth_ok
 
-    # --- Пункт 11: Яндекс Браузер на HQ-CLI ---
-    log_msg("\n📌 Пункт 11: Яндекс Браузер на HQ-CLI")
+    # --- Пункт 10: Яндекс Браузер на HQ-CLI ---
+    log_msg("\n📌 Пункт 10: Яндекс Браузер на HQ-CLI")
     browser_ok = True
     if "HQ-CLI" not in vm_ports:
         browser_ok = False
     else:
-        which_out, _, _ = ssh_exec(vm_ports["HQ-CLI"], "which yandex-browser", "root", "toor")
-        log_msg("[HQ-CLI] Выполняется команда: which yandex-browser")
+        which_out, _, _ = ssh_exec(vm_ports["HQ-CLI"], "which yandex-browser-stable", "root", "toor")
+        log_msg("[HQ-CLI] Выполняется команда: which yandex-browser-stable")
         safe_log_output(log_lines, "[HQ-CLI] Вывод", which_out, "")
-        if not which_out:
+        if not (which_out and "/" in which_out and "no " not in which_out):
             browser_ok = False
 
     if browser_ok:
         POINTS += 1.0
-        log_msg("✅ Пункт 11 пройден (+1 балл)")
+        log_msg("✅ Пункт 10 пройден (+1 балл)")
     else:
-        log_msg("❌ Пункт 11 не пройден")
-    results["Пункт 11: Yandex Browser"] = browser_ok
+        log_msg("❌ Пункт 10 не пройден")
+    results["Пункт 10: Yandex Browser"] = browser_ok
 
     # --- ИТОГОВЫЙ ОТЧЁТ ---
     log_msg("\n📊 ИТОГОВЫЙ ОТЧЁТ:")

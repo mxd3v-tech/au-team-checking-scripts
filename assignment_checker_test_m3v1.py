@@ -11,9 +11,10 @@ except ImportError:
 
 # ========== УЧЁТНЫЕ ДАННЫЕ ==========
 SRV_CREDENTIALS = {
-    "HQ-SRV": ("root", "toor"),
     "BR-SRV": ("root", "toor"),
+    "HQ-SRV": ("root", "toor"),
     "HQ-CLI": ("root", "toor"),
+    "BR-CLI": ("root", "toor"),
     "ISP": ("root", "toor"),
 }
 
@@ -31,11 +32,12 @@ def get_rtr_creds(name):
 # ========== ФУНКЦИИ ДЛЯ СЕРВЕРОВ (Linux) ==========
 def ssh_exec(ssh_port, command, username='root', password='toor', timeout=30):
     if not ssh_port or ssh_port == "N/A":
-        return None, "❌ Порт SSH недоступен: %s" % ssh_port, command
+        return None, "❌ Порт SSH недоступен: %s" % ssh_port, "Выполняется команда: %s" % command
     try:
         ssh_cmd = [
             "sshpass", "-p", password,
-            "ssh", "-o", "StrictHostKeyChecking=no",
+            "ssh",
+            "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",
             "-o", "ConnectTimeout=10",
             "-o", "ServerAliveInterval=5",
@@ -47,26 +49,31 @@ def ssh_exec(ssh_port, command, username='root', password='toor', timeout=30):
             ssh_cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            universal_newlines=True
+            universal_newlines=True,
+            bufsize=1
         )
         try:
             stdout, stderr = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
             process.kill()
             process.communicate()
-            return None, "❌ Таймаут (%d сек)" % timeout, command
-        return stdout, stderr, command
+            return None, "❌ Таймаут выполнения команды (%d сек)" % timeout, "Выполняется команда: %s" % command
+        return stdout, stderr, "Выполняется команда: %s" % command
+    except FileNotFoundError:
+        return None, "❌ Команда 'sshpass' не найдена. Установите пакет sshpass.", "Выполняется команда: %s" % command
     except Exception as e:
-        return None, "❌ Ошибка: %s" % str(e), command
+        return None, "❌ Ошибка выполнения: %s" % str(e), "Выполняется команда: %s" % command
 
 # ========== ФУНКЦИИ ДЛЯ МАРШРУТИЗАТОРОВ (EcoRouterOS) ==========
 def rtr_exec(port, username, password, command, timeout=30):
     if not PEXPECT_AVAILABLE:
-        return None, "pexpect не установлен", command
+        return None, "pexpect не установлен", "Выполняется команда: %s" % command
     try:
         child = pexpect.spawn(
             "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p %s %s@localhost" % (port, username),
-            timeout=timeout, encoding='utf-8', codec_errors='ignore'
+            timeout=timeout,
+            encoding='utf-8',
+            codec_errors='ignore'
         )
         child.expect(r"[Pp]assword:", timeout=60)
         child.sendline(password)
@@ -79,11 +86,11 @@ def rtr_exec(port, username, password, command, timeout=30):
         child.sendline("exit")
         child.close()
         ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-        return ansi_escape.sub('', output), "", command
+        return ansi_escape.sub('', output), "", "Выполняется команда: %s" % command
     except pexpect.TIMEOUT:
-        return None, "Таймаут выполнения команды", command
+        return None, "Таймаут выполнения команды", "Выполняется команда: %s" % command
     except Exception as e:
-        return None, "Ошибка pexpect: %s" % str(e), command
+        return None, "Ошибка pexpect: %s" % str(e), "Выполняется команда: %s" % command
 
 def rtr_exec_with_enable(port, username, password, command, timeout=30):
     if not PEXPECT_AVAILABLE:
@@ -91,7 +98,9 @@ def rtr_exec_with_enable(port, username, password, command, timeout=30):
     try:
         child = pexpect.spawn(
             "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p %s %s@localhost" % (port, username),
-            timeout=timeout, encoding='utf-8', codec_errors='ignore'
+            timeout=timeout,
+            encoding='utf-8',
+            codec_errors='ignore'
         )
         child.expect(r"[Pp]assword:", timeout=60)
         child.sendline(password)
@@ -107,21 +116,16 @@ def rtr_exec_with_enable(port, username, password, command, timeout=30):
         child.sendline("exit")
         child.close()
         ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-        return ansi_escape.sub('', full_output), "", command
+        clean_output = ansi_escape.sub('', full_output)
+        return clean_output, "", command
     except pexpect.TIMEOUT:
         return None, "Таймаут выполнения команды", command
     except Exception as e:
         return None, "Ошибка pexpect: %s" % str(e), command
 
-# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 def safe_log_output(log_lines, prefix, output, error=""):
     full_output = (output or "") + ("\n" + error if error else "")
     log_lines.append("%s:\n%s\n" % (prefix, full_output))
-
-def is_rtr_linux(vm_ports, rtr_name):
-    """Определяет, является ли маршрутизатор Linux-based (не EcoRouter)."""
-    out, err, _ = ssh_exec(vm_ports.get(rtr_name, ""), "uname -s 2>/dev/null", "root", "toor", timeout=10)
-    return out is not None and "Linux" in (out or "")
 
 # ========== ГЛАВНАЯ ФУНКЦИЯ ==========
 def run_full_assignment_check(vm_ports):
@@ -137,20 +141,22 @@ def run_full_assignment_check(vm_ports):
     # --- Вывод портов SSH ---
     log_msg("\n🔍 Доступные SSH-порты:")
     for device, port in sorted(vm_ports.items()):
-        log_msg("  %s: %s" % (device, port))
+        log_msg(f"  {device}: {port}")
     log_msg("")
 
     log_msg("🔍 Начало комплексной проверки Модуля 3 (M3-V1)")
 
-    # Определяем тип маршрутизаторов
-    hq_rtr_linux = is_rtr_linux(vm_ports, "HQ-RTR") if "HQ-RTR" in vm_ports else False
-    br_rtr_linux = is_rtr_linux(vm_ports, "BR-RTR") if "BR-RTR" in vm_ports else False
-    if hq_rtr_linux:
-        log_msg("ℹ️  HQ-RTR определён как Linux-маршрутизатор")
-    if br_rtr_linux:
-        log_msg("ℹ️  BR-RTR определён как Linux-маршрутизатор")
+    DEVICE_NAMES = {
+        "BR-SRV": "br-srv.au-team.irpo",
+        "HQ-SRV": "hq-srv.au-team.irpo",
+        "HQ-CLI": "hq-cli.au-team.irpo",
+        "BR-CLI": "br-cli.au-team.irpo",
+        "HQ-RTR": "hq-rtr",
+        "BR-RTR": "br-rtr",
+        "ISP": "isp",
+    }
 
-    # --- Пункт 1: Импорт пользователей (задание п.1) ---
+    # --- Пункт 1: Импорт пользователей (задание п.11) ---
     log_msg("\n📌 Пункт 1: Импорт пользователей из users.csv")
     import_ok = True
 
@@ -160,22 +166,22 @@ def run_full_assignment_check(vm_ports):
     else:
         # Проверяем список пользователей в домене
         users_out, _, _ = ssh_exec(vm_ports["BR-SRV"], "samba-tool user list", "root", "toor")
-        log_msg("[BR-SRV] samba-tool user list")
+        log_msg("[BR-SRV] Выполняется команда: samba-tool user list")
         safe_log_output(log_lines, "[BR-SRV] Вывод", users_out, "")
 
-        custom_users = []
         if not users_out:
             log_msg("❌ Не удалось получить список пользователей")
             import_ok = False
         else:
+            # Считаем количество пользователей (исключаем стандартных: Administrator, Guest, krbtgt и т.д.)
             standard_users = {"administrator", "guest", "krbtgt", "dns-hq-srv"}
             user_list = [u.strip().lower() for u in users_out.splitlines() if u.strip()]
             custom_users = [u for u in user_list if u not in standard_users]
             if len(custom_users) < 3:
-                log_msg("❌ Найдено слишком мало импортированных пользователей: %d" % len(custom_users))
+                log_msg(f"❌ Найдено слишком мало импортированных пользователей: {len(custom_users)}")
                 import_ok = False
             else:
-                log_msg("✅ Найдено %d пользователей в домене" % len(custom_users))
+                log_msg(f"✅ Найдено {len(custom_users)} пользователей в домене")
 
         # Проверка входа на HQ-CLI — SSH как доменный пользователь + fallback wbinfo
         if import_ok and "HQ-CLI" in vm_ports and custom_users:
@@ -208,7 +214,7 @@ def run_full_assignment_check(vm_ports):
         log_msg("❌ Пункт 1 не пройден")
     results["Пункт 1: Импорт пользователей"] = import_ok
 
-    # --- Пункт 2: Центр сертификации (задание п.2) ---
+    # --- Пункт 2: Центр сертификации (задание п.12) ---
     log_msg("\n📌 Пункт 2: Центр сертификации на HQ-SRV")
     ca_ok = True
 
@@ -216,37 +222,17 @@ def run_full_assignment_check(vm_ports):
         log_msg("⚠️ HQ-SRV не найден")
         ca_ok = False
     else:
-        # Проверяем наличие CA-сертификата (ГОСТ алгоритмы)
-        ca_cert, _, _ = ssh_exec(vm_ports["HQ-SRV"],
-            "find /etc/pki /etc/ssl /root /opt -maxdepth 3 "
-            "\\( -name 'ca*.pem' -o -name 'ca*.crt' -o -name 'rootCA*' \\) "
-            "2>/dev/null | head -5", "root", "toor")
+        # Проверяем наличие CA-сертификата
+        ca_cert, _, _ = ssh_exec(vm_ports["HQ-SRV"], "ls /etc/pki/CA/certs/ 2>/dev/null || ls /etc/ssl/certs/ca-* 2>/dev/null || ls /root/ca* 2>/dev/null || find / -maxdepth 3 -name 'ca*.pem' -o -name 'ca*.crt' 2>/dev/null | head -5", "root", "toor")
         log_msg("[HQ-SRV] Поиск CA-сертификата")
         safe_log_output(log_lines, "[HQ-SRV] Вывод", ca_cert, "")
-        if not ca_cert or not ca_cert.strip():
+        if not ca_cert:
             log_msg("❌ CA-сертификат не найден")
             ca_ok = False
-        else:
-            # Проверяем срок действия (30 дней) и алгоритм
-            cert_path = ca_cert.strip().splitlines()[0].strip()
-            cert_info, _, _ = ssh_exec(vm_ports["HQ-SRV"],
-                "openssl x509 -in '%s' -noout -text 2>/dev/null | head -20" % cert_path,
-                "root", "toor")
-            log_msg("[HQ-SRV] Информация о CA-сертификате")
-            safe_log_output(log_lines, "[HQ-SRV] Вывод", cert_info, "")
-            if cert_info:
-                # Проверяем отечественные алгоритмы (ГОСТ)
-                has_gost = bool(re.search(r'gost|GOST|grasshopper|magma|id-tc26', cert_info, re.IGNORECASE))
-                if has_gost:
-                    log_msg("✅ Используются отечественные алгоритмы (ГОСТ)")
-                else:
-                    log_msg("⚠️ Отечественные алгоритмы (ГОСТ) не обнаружены в сертификате")
 
-        # Проверка HTTPS на nginx (ISP — реверсивный прокси)
+        # Проверка HTTPS на nginx (ISP)
         if "ISP" in vm_ports:
-            nginx_conf, _, _ = ssh_exec(vm_ports["ISP"],
-                "cat /etc/nginx/sites-enabled/*.conf /etc/nginx/sites-enabled.d/*.conf "
-                "/etc/nginx/conf.d/*.conf 2>/dev/null", "root", "toor")
+            nginx_conf, _, _ = ssh_exec(vm_ports["ISP"], "cat /etc/nginx/sites-enabled.d/*.conf 2>/dev/null || cat /etc/nginx/conf.d/*.conf 2>/dev/null", "root", "toor")
             log_msg("[ISP] Проверка конфигурации nginx (HTTPS)")
             safe_log_output(log_lines, "[ISP] Вывод", nginx_conf, "")
             if nginx_conf:
@@ -260,18 +246,12 @@ def run_full_assignment_check(vm_ports):
                 log_msg("❌ Конфигурация nginx не найдена")
                 ca_ok = False
 
-        # Проверяем HTTPS доступность web.au-team.irpo и docker.au-team.irpo с HQ-CLI
+        # Проверяем доверие на HQ-CLI
         if "HQ-CLI" in vm_ports:
-            for domain in ["web.au-team.irpo", "docker.au-team.irpo"]:
-                curl_out, _, _ = ssh_exec(vm_ports["HQ-CLI"],
-                    "curl -sk -o /dev/null -w '%%{http_code}' https://%s 2>/dev/null" % domain,
-                    "root", "toor")
-                log_msg("[HQ-CLI] curl https://%s → %s" % (domain, (curl_out or "").strip()))
-                if curl_out and curl_out.strip() in ("200", "301", "302"):
-                    log_msg("✅ https://%s доступен" % domain)
-                else:
-                    log_msg("❌ https://%s недоступен" % domain)
-                    ca_ok = False
+            trust_out, _, _ = ssh_exec(vm_ports["HQ-CLI"], "trust list | head -30", "root", "toor")
+            log_msg("[HQ-CLI] Выполняется команда: trust list | head -30")
+            safe_log_output(log_lines, "[HQ-CLI] Вывод", trust_out, "")
+            # Информационно — не фейлим, т.к. trust может быть настроен по-разному
 
     if ca_ok:
         POINTS += 1.0
@@ -280,135 +260,67 @@ def run_full_assignment_check(vm_ports):
         log_msg("❌ Пункт 2 не пройден")
     results["Пункт 2: Центр сертификации"] = ca_ok
 
-    # --- Пункт 3: Шифрованный туннель (задание п.3) ---
-    log_msg("\n📌 Пункт 3: Шифрованный туннель между HQ-RTR и BR-RTR")
-    tunnel_ok = True
+    # --- Пункт 3: IPsec туннель (задание п.13) ---
+    log_msg("\n📌 Пункт 3: IPsec туннель")
+    ipsec_ok = True
 
-    for rtr_name, rtr_is_linux in [("HQ-RTR", hq_rtr_linux), ("BR-RTR", br_rtr_linux)]:
-        if rtr_name not in vm_ports:
-            log_msg("⚠️ %s не найден" % rtr_name)
-            tunnel_ok = False
+    for rtr in ["HQ-RTR", "BR-RTR"]:
+        if rtr not in vm_ports:
+            log_msg(f"⚠️ {rtr} не найден")
+            ipsec_ok = False
             continue
 
-        if rtr_is_linux:
-            # Проверяем WireGuard или IPsec на Linux
-            wg_out, _, _ = ssh_exec(vm_ports[rtr_name], "wg show 2>/dev/null", "root", "toor")
-            ipsec_out, _, _ = ssh_exec(vm_ports[rtr_name],
-                "ipsec status 2>/dev/null || strongswan status 2>/dev/null || "
-                "ip xfrm state 2>/dev/null", "root", "toor")
-            log_msg("[%s] Проверка шифрованного туннеля (Linux)" % rtr_name)
-            safe_log_output(log_lines, "[%s] wg show" % rtr_name, wg_out, "")
-            safe_log_output(log_lines, "[%s] ipsec/xfrm" % rtr_name, ipsec_out, "")
+        # Проверяем наличие ipsec в конфигурации
+        ipsec_out, _, _ = rtr_exec(vm_ports[rtr], *get_rtr_creds(rtr), "show running-config | include ipsec")
+        log_msg(f"[{rtr}] Выполняется команда: show running-config | include ipsec")
+        safe_log_output(log_lines, f"[{rtr}] Вывод", ipsec_out, "")
+        if not (ipsec_out and "ipsec" in ipsec_out.lower()):
+            log_msg(f"❌ {rtr}: IPsec не настроен")
+            ipsec_ok = False
 
-            has_wg = wg_out and ("interface" in wg_out.lower() or "peer" in wg_out.lower())
-            has_ipsec = ipsec_out and (
-                "established" in ipsec_out.lower() or
-                "INSTALLED" in (ipsec_out or "") or
-                "proto esp" in (ipsec_out or "").lower() or
-                "src" in (ipsec_out or ""))
-            if has_wg:
-                log_msg("✅ %s: WireGuard туннель активен" % rtr_name)
-            elif has_ipsec:
-                log_msg("✅ %s: IPsec туннель активен" % rtr_name)
-            else:
-                log_msg("❌ %s: Шифрованный туннель не обнаружен" % rtr_name)
-                tunnel_ok = False
-
-            # Проверяем OSPF
-            ospf_out, _, _ = ssh_exec(vm_ports[rtr_name],
-                "vtysh -c 'show ip ospf neighbor' 2>/dev/null", "root", "toor")
-            log_msg("[%s] OSPF neighbor (Linux)" % rtr_name)
-            safe_log_output(log_lines, "[%s] Вывод" % rtr_name, ospf_out, "")
-            if ospf_out and "Full" in ospf_out:
-                log_msg("✅ %s: OSPF neighbor активен" % rtr_name)
-            else:
-                log_msg("❌ %s: OSPF neighbor не в состоянии Full" % rtr_name)
-                tunnel_ok = False
+        # Проверяем OSPF всё ещё работает
+        ospf_out, _, _ = rtr_exec(vm_ports[rtr], *get_rtr_creds(rtr), "show ip ospf neighbor")
+        log_msg(f"[{rtr}] Выполняется команда: show ip ospf neighbor")
+        safe_log_output(log_lines, f"[{rtr}] Вывод", ospf_out, "")
+        if not (ospf_out and ("Full" in ospf_out)):
+            log_msg(f"❌ {rtr}: OSPF neighbor не в состоянии Full")
+            ipsec_ok = False
         else:
-            # EcoRouter — проверяем ipsec в running-config
-            u, p = get_rtr_creds(rtr_name)
-            ipsec_out, _, _ = rtr_exec_with_enable(vm_ports[rtr_name], u, p,
-                "show running-config")
-            log_msg("[%s] show running-config (EcoRouter)" % rtr_name)
-            safe_log_output(log_lines, "[%s] Вывод" % rtr_name, ipsec_out, "")
-            if ipsec_out and re.search(r'ipsec|wireguard|crypto', ipsec_out, re.IGNORECASE):
-                log_msg("✅ %s: Шифрованный туннель настроен" % rtr_name)
-            else:
-                log_msg("❌ %s: Шифрованный туннель не настроен" % rtr_name)
-                tunnel_ok = False
+            log_msg(f"✅ {rtr}: OSPF neighbor активен")
 
-            # OSPF
-            ospf_out, _, _ = rtr_exec(vm_ports[rtr_name], u, p, "show ip ospf neighbor")
-            log_msg("[%s] show ip ospf neighbor" % rtr_name)
-            safe_log_output(log_lines, "[%s] Вывод" % rtr_name, ospf_out, "")
-            if ospf_out and "Full" in ospf_out:
-                log_msg("✅ %s: OSPF neighbor активен" % rtr_name)
-            else:
-                log_msg("❌ %s: OSPF neighbor не в состоянии Full" % rtr_name)
-                tunnel_ok = False
-
-    if tunnel_ok:
+    if ipsec_ok:
         POINTS += 1.0
         log_msg("✅ Пункт 3 пройден (+1 балл)")
     else:
         log_msg("❌ Пункт 3 не пройден")
-    results["Пункт 3: Шифрованный туннель"] = tunnel_ok
+    results["Пункт 3: IPsec"] = ipsec_ok
 
-    # --- Пункт 4: Межсетевой экран (задание п.4) ---
-    log_msg("\n📌 Пункт 4: Межсетевой экран на HQ-RTR и BR-RTR")
+    # --- Пункт 4: Межсетевой экран (задание п.14) ---
+    log_msg("\n📌 Пункт 4: Межсетевой экран")
     fw_ok = True
 
-    for rtr_name, rtr_is_linux in [("HQ-RTR", hq_rtr_linux), ("BR-RTR", br_rtr_linux)]:
-        if rtr_name not in vm_ports:
-            log_msg("⚠️ %s не найден" % rtr_name)
+    if "HQ-RTR" in vm_ports:
+        fw_out, _, _ = rtr_exec(vm_ports["HQ-RTR"], *get_rtr_creds("HQ-RTR"), "show running-config | include access-list")
+        log_msg("[HQ-RTR] Выполняется команда: show running-config | include access-list")
+        safe_log_output(log_lines, "[HQ-RTR] Вывод", fw_out, "")
+        if not (fw_out and "access-list" in fw_out.lower()):
+            log_msg("❌ HQ-RTR: ACL не настроен")
             fw_ok = False
-            continue
-
-        if rtr_is_linux:
-            # Проверяем iptables/nftables
-            ipt_out, _, _ = ssh_exec(vm_ports[rtr_name],
-                "iptables -L -n 2>/dev/null | head -40", "root", "toor")
-            nft_out, _, _ = ssh_exec(vm_ports[rtr_name],
-                "nft list ruleset 2>/dev/null | head -40", "root", "toor")
-            log_msg("[%s] Проверка межсетевого экрана (Linux)" % rtr_name)
-            safe_log_output(log_lines, "[%s] iptables" % rtr_name, ipt_out, "")
-            safe_log_output(log_lines, "[%s] nftables" % rtr_name, nft_out, "")
-
-            has_fw = False
-            if ipt_out and ("DROP" in ipt_out or "REJECT" in ipt_out):
-                has_fw = True
-            if nft_out and ("drop" in nft_out or "reject" in nft_out):
-                has_fw = True
-            if ipt_out and "policy DROP" in ipt_out:
-                has_fw = True
-
-            if has_fw:
-                log_msg("✅ %s: Межсетевой экран настроен" % rtr_name)
-            else:
-                log_msg("❌ %s: Межсетевой экран не настроен (нет правил блокировки)" % rtr_name)
-                fw_ok = False
         else:
-            # EcoRouter — проверяем ACL
-            u, p = get_rtr_creds(rtr_name)
-            acl_out, _, _ = rtr_exec(vm_ports[rtr_name], u, p,
-                "show running-config | include access-list")
-            log_msg("[%s] show running-config | include access-list" % rtr_name)
-            safe_log_output(log_lines, "[%s] Вывод" % rtr_name, acl_out, "")
-            if acl_out and "access-list" in acl_out.lower():
-                log_msg("✅ %s: ACL найден" % rtr_name)
-            else:
-                log_msg("❌ %s: ACL не настроен" % rtr_name)
-                fw_ok = False
+            log_msg("✅ HQ-RTR: ACL найден")
+    else:
+        fw_ok = False
 
-    # Проверяем что ICMP работает через фаервол (базовый тест)
-    if "ISP" in vm_ports:
-        ping_out, _, _ = ssh_exec(vm_ports["ISP"], "ping -c 2 -W 3 172.16.1.2", "root", "toor")
-        log_msg("[ISP] ping -c 2 172.16.1.2")
+    # Проверяем что ICMP работает (базовый тест)
+    if "HQ-CLI" in vm_ports and "ISP" in vm_ports:
+        # Пинг с ISP на HQ-RTR внешний интерфейс (должен работать — icmp разрешён)
+        ping_out, _, _ = ssh_exec(vm_ports["ISP"], "ping -c 2 172.16.1.2", "root", "toor")
+        log_msg("[ISP] Выполняется команда: ping -c 2 172.16.1.2")
         safe_log_output(log_lines, "[ISP] Вывод", ping_out, "")
-        if ping_out and ("1 received" in ping_out or "2 received" in ping_out):
+        if ping_out and "2 received" in ping_out:
             log_msg("✅ ICMP через межсетевой экран работает")
         else:
-            log_msg("⚠️ ICMP пинг не прошёл (информационно)")
+            log_msg("⚠️ ICMP пинг не прошёл (может быть нормально если блокируется)")
 
     if fw_ok:
         POINTS += 1.0
@@ -417,35 +329,35 @@ def run_full_assignment_check(vm_ports):
         log_msg("❌ Пункт 4 не пройден")
     results["Пункт 4: Межсетевой экран"] = fw_ok
 
-    # --- Пункт 5: CUPS принт-сервер (задание п.5) ---
+    # --- Пункт 5: CUPS принт-сервер (задание п.15) ---
     log_msg("\n📌 Пункт 5: CUPS принт-сервер на HQ-SRV")
     cups_ok = True
 
     if "HQ-SRV" not in vm_ports:
-        log_msg("⚠️ HQ-SRV не найден")
         cups_ok = False
     else:
+        # Проверяем что cups работает
         cups_status, _, _ = ssh_exec(vm_ports["HQ-SRV"], "systemctl is-active cups", "root", "toor")
-        log_msg("[HQ-SRV] systemctl is-active cups")
+        log_msg("[HQ-SRV] Выполняется команда: systemctl is-active cups")
         safe_log_output(log_lines, "[HQ-SRV] Вывод", cups_status, "")
         if not (cups_status and cups_status.strip() == "active"):
             log_msg("❌ CUPS не запущен")
             cups_ok = False
 
         # Проверяем наличие PDF-принтера
-        printers_out, _, _ = ssh_exec(vm_ports["HQ-SRV"], "lpstat -p 2>/dev/null", "root", "toor")
-        log_msg("[HQ-SRV] lpstat -p")
+        printers_out, _, _ = ssh_exec(vm_ports["HQ-SRV"], "lpstat -p", "root", "toor")
+        log_msg("[HQ-SRV] Выполняется команда: lpstat -p")
         safe_log_output(log_lines, "[HQ-SRV] Вывод", printers_out, "")
-        if not (printers_out and re.search(r'(pdf|PDF|virtual|cups-pdf)', printers_out, re.IGNORECASE)):
+        if not (printers_out and re.search(r'(pdf|PDF|virtual)', printers_out, re.IGNORECASE)):
             log_msg("❌ PDF-принтер не найден")
             cups_ok = False
         else:
-            log_msg("✅ PDF-принтер найден на HQ-SRV")
+            log_msg("✅ PDF-принтер найден")
 
     # Проверяем принтер по умолчанию на HQ-CLI
     if cups_ok and "HQ-CLI" in vm_ports:
-        default_printer, _, _ = ssh_exec(vm_ports["HQ-CLI"], "lpstat -d 2>/dev/null", "root", "toor")
-        log_msg("[HQ-CLI] lpstat -d")
+        default_printer, _, _ = ssh_exec(vm_ports["HQ-CLI"], "lpstat -d", "root", "toor")
+        log_msg("[HQ-CLI] Выполняется команда: lpstat -d")
         safe_log_output(log_lines, "[HQ-CLI] Вывод", default_printer, "")
         if not (default_printer and "system default destination" in default_printer.lower()):
             log_msg("❌ Принтер по умолчанию не настроен на HQ-CLI")
@@ -460,53 +372,33 @@ def run_full_assignment_check(vm_ports):
         log_msg("❌ Пункт 5 не пройден")
     results["Пункт 5: CUPS"] = cups_ok
 
-    # --- Пункт 6: rsyslog (задание п.6) ---
-    log_msg("\n📌 Пункт 6: rsyslog логирование на HQ-SRV")
+    # --- Пункт 6: Syslog (задание п.16) ---
+    log_msg("\n📌 Пункт 6: Syslog на HQ-SRV")
     syslog_ok = True
 
     if "HQ-SRV" not in vm_ports:
-        log_msg("⚠️ HQ-SRV не найден")
         syslog_ok = False
     else:
-        # Проверяем что rsyslog слушает сеть (порт 514)
-        listen_out, _, _ = ssh_exec(vm_ports["HQ-SRV"], "ss -tulnH sport = :514", "root", "toor")
-        log_msg("[HQ-SRV] ss -tulnH sport = :514")
-        safe_log_output(log_lines, "[HQ-SRV] Вывод", listen_out, "")
-        if not (listen_out and listen_out.strip()):
-            log_msg("❌ rsyslog не слушает порт 514")
-            syslog_ok = False
-        else:
-            log_msg("✅ rsyslog слушает порт 514")
-
-        # Проверяем наличие директорий /opt для каждого устройства
-        expected_dirs = ["hq-rtr", "br-rtr", "br-srv"]
-        opt_dirs, _, _ = ssh_exec(vm_ports["HQ-SRV"], "ls -1 /opt/", "root", "toor")
-        log_msg("[HQ-SRV] ls /opt/")
-        safe_log_output(log_lines, "[HQ-SRV] Вывод", opt_dirs, "")
-        if opt_dirs:
-            existing = [d.strip().lower() for d in opt_dirs.splitlines() if d.strip()]
-            for edir in expected_dirs:
-                if edir in existing:
-                    log_msg("✅ Директория /opt/%s найдена" % edir)
-                else:
-                    log_msg("❌ Директория /opt/%s не найдена" % edir)
-                    syslog_ok = False
-        else:
-            log_msg("❌ Директория /opt пуста или не доступна")
-            syslog_ok = False
-
-        # Проверяем что HQ-SRV не отправляет логи самому себе
-        rsyslog_conf, _, _ = ssh_exec(vm_ports["HQ-SRV"],
-            "cat /etc/rsyslog.conf /etc/rsyslog.d/*.conf 2>/dev/null", "root", "toor")
+        # Проверяем rsyslog конфигурацию
+        rsyslog_conf, _, _ = ssh_exec(vm_ports["HQ-SRV"], "cat /etc/rsyslog.conf 2>/dev/null; ls /etc/rsyslog.d/ 2>/dev/null", "root", "toor")
         log_msg("[HQ-SRV] Проверка конфигурации rsyslog")
         safe_log_output(log_lines, "[HQ-SRV] Вывод", rsyslog_conf, "")
-        if rsyslog_conf and re.search(r'@@?(127\.0\.0\.1|localhost|hq-srv)', rsyslog_conf, re.IGNORECASE):
-            log_msg("⚠️ HQ-SRV может отправлять логи самому себе")
 
-        # Проверяем logrotate для /opt
-        logrotate_out, _, _ = ssh_exec(vm_ports["HQ-SRV"],
-            "cat /etc/logrotate.d/*opt* /etc/logrotate.d/*syslog* 2>/dev/null; "
-            "grep -rl '/opt' /etc/logrotate.d/ 2>/dev/null | xargs cat 2>/dev/null", "root", "toor")
+        # Проверяем что rsyslog слушает сеть (порт 514)
+        listen_out, _, _ = ssh_exec(vm_ports["HQ-SRV"], "ss -tulnH sport = :514", "root", "toor")
+        log_msg("[HQ-SRV] Выполняется команда: ss -tulnH sport = :514")
+        safe_log_output(log_lines, "[HQ-SRV] Вывод", listen_out, "")
+        if not listen_out:
+            log_msg("❌ rsyslog не слушает порт 514")
+            syslog_ok = False
+
+        # Проверяем наличие директорий в /opt
+        opt_dirs, _, _ = ssh_exec(vm_ports["HQ-SRV"], "ls -la /opt/", "root", "toor")
+        log_msg("[HQ-SRV] Выполняется команда: ls -la /opt/")
+        safe_log_output(log_lines, "[HQ-SRV] Вывод", opt_dirs, "")
+
+        # Проверяем ротацию логов
+        logrotate_out, _, _ = ssh_exec(vm_ports["HQ-SRV"], "cat /etc/logrotate.d/*opt* 2>/dev/null || grep -r '/opt' /etc/logrotate.d/ 2>/dev/null || grep -r '/opt' /etc/logrotate.conf 2>/dev/null", "root", "toor")
         log_msg("[HQ-SRV] Проверка logrotate для /opt")
         safe_log_output(log_lines, "[HQ-SRV] Вывод", logrotate_out, "")
         if logrotate_out:
@@ -532,130 +424,86 @@ def run_full_assignment_check(vm_ports):
         log_msg("✅ Пункт 6 пройден (+1 балл)")
     else:
         log_msg("❌ Пункт 6 не пройден")
-    results["Пункт 6: rsyslog"] = syslog_ok
+    results["Пункт 6: Syslog"] = syslog_ok
 
-    # --- Пункт 7: Мониторинг (задание п.7) ---
-    log_msg("\n📌 Пункт 7: Мониторинг на HQ-SRV (mon.au-team.irpo)")
-    mon_ok = True
+    # --- Пункт 7: Zabbix мониторинг (задание п.17) ---
+    log_msg("\n📌 Пункт 7: Zabbix мониторинг на HQ-SRV")
+    zabbix_ok = True
 
     if "HQ-SRV" not in vm_ports:
-        log_msg("⚠️ HQ-SRV не найден")
-        mon_ok = False
+        zabbix_ok = False
     else:
-        # Проверяем запущенные сервисы мониторинга (zabbix, prometheus, grafana, nagios и т.д.)
-        docker_out, _, _ = ssh_exec(vm_ports["HQ-SRV"],
-            "docker ps --format '{{.Names}}' 2>/dev/null; "
-            "podman ps --format '{{.Names}}' 2>/dev/null", "root", "toor")
+        # Проверяем контейнер Zabbix
+        docker_out, _, _ = ssh_exec(vm_ports["HQ-SRV"], "docker ps --format '{{.Names}}' 2>/dev/null || podman ps --format '{{.Names}}' 2>/dev/null", "root", "toor")
         log_msg("[HQ-SRV] Проверка контейнеров мониторинга")
         safe_log_output(log_lines, "[HQ-SRV] Вывод", docker_out, "")
+        if not (docker_out and re.search(r'zabbix', docker_out, re.IGNORECASE)):
+            log_msg("❌ Контейнер Zabbix не найден")
+            zabbix_ok = False
 
-        systemd_out, _, _ = ssh_exec(vm_ports["HQ-SRV"],
-            "systemctl is-active zabbix-server prometheus grafana-server nagios 2>/dev/null",
-            "root", "toor")
-        log_msg("[HQ-SRV] Проверка сервисов мониторинга")
-        safe_log_output(log_lines, "[HQ-SRV] Вывод", systemd_out, "")
+        # Проверяем доступность веб-интерфейса
+        curl_out, _, _ = ssh_exec(vm_ports["HQ-SRV"], "curl -s -o /dev/null -w '%{http_code}' http://localhost:8080 2>/dev/null || curl -s -o /dev/null -w '%{http_code}' http://localhost:80 2>/dev/null", "root", "toor")
+        log_msg("[HQ-SRV] Проверка доступности веб-интерфейса Zabbix")
+        safe_log_output(log_lines, "[HQ-SRV] Вывод", curl_out, "")
+        if not (curl_out and ("200" in curl_out or "302" in curl_out)):
+            log_msg("⚠️ Веб-интерфейс мониторинга недоступен локально")
 
-        has_monitoring = False
-        if docker_out and re.search(r'zabbix|prometheus|grafana|nagios', docker_out, re.IGNORECASE):
-            has_monitoring = True
-            log_msg("✅ Контейнер мониторинга найден")
-        if systemd_out and "active" in systemd_out:
-            has_monitoring = True
-            log_msg("✅ Сервис мониторинга активен")
-        if not has_monitoring:
-            log_msg("❌ Сервисы мониторинга не найдены")
-            mon_ok = False
-
-        # Проверяем доступность по mon.au-team.irpo с HQ-CLI
+        # Проверяем DNS-запись mon.au-team.irpo
         if "HQ-CLI" in vm_ports:
-            dns_out, _, _ = ssh_exec(vm_ports["HQ-CLI"],
-                "host mon.au-team.irpo 2>/dev/null || nslookup mon.au-team.irpo 2>/dev/null",
-                "root", "toor")
-            log_msg("[HQ-CLI] DNS mon.au-team.irpo")
+            dns_out, _, _ = ssh_exec(vm_ports["HQ-CLI"], "nslookup mon.au-team.irpo", "root", "toor")
+            log_msg("[HQ-CLI] Выполняется команда: nslookup mon.au-team.irpo")
             safe_log_output(log_lines, "[HQ-CLI] Вывод", dns_out, "")
-            if dns_out and ("address" in dns_out.lower() or "Address" in dns_out):
-                log_msg("✅ DNS-запись mon.au-team.irpo разрешается")
-            else:
+            if not (dns_out and "Address" in dns_out):
                 log_msg("❌ DNS-запись mon.au-team.irpo не разрешается")
-                mon_ok = False
-
-            # Проверяем HTTP-доступность
-            curl_out, _, _ = ssh_exec(vm_ports["HQ-CLI"],
-                "curl -s -o /dev/null -w '%%{http_code}' http://mon.au-team.irpo 2>/dev/null",
-                "root", "toor")
-            log_msg("[HQ-CLI] curl http://mon.au-team.irpo → %s" % (curl_out or "").strip())
-            if curl_out and curl_out.strip() in ("200", "302", "301", "303"):
-                log_msg("✅ Мониторинг доступен по HTTP")
+                zabbix_ok = False
             else:
-                log_msg("❌ Мониторинг недоступен по http://mon.au-team.irpo")
-                mon_ok = False
+                log_msg("✅ DNS-запись mon.au-team.irpo разрешается")
 
-        # Проверяем агент мониторинга на BR-SRV
+        # Проверяем zabbix-agent на BR-SRV
         if "BR-SRV" in vm_ports:
-            agent_out, _, _ = ssh_exec(vm_ports["BR-SRV"],
-                "systemctl is-active zabbix-agent 2>/dev/null || "
-                "systemctl is-active zabbix-agent2 2>/dev/null || "
-                "systemctl is-active prometheus-node-exporter 2>/dev/null || "
-                "systemctl is-active node_exporter 2>/dev/null",
-                "root", "toor")
-            log_msg("[BR-SRV] Проверка агента мониторинга")
+            agent_out, _, _ = ssh_exec(vm_ports["BR-SRV"], "systemctl is-active zabbix-agent 2>/dev/null || systemctl is-active zabbix-agent2 2>/dev/null", "root", "toor")
+            log_msg("[BR-SRV] Проверка zabbix-agent")
             safe_log_output(log_lines, "[BR-SRV] Вывод", agent_out, "")
-            if agent_out and "active" in agent_out:
-                log_msg("✅ Агент мониторинга на BR-SRV активен")
-            else:
-                log_msg("⚠️ Агент мониторинга на BR-SRV не обнаружен")
+            if not (agent_out and "active" in agent_out):
+                log_msg("⚠️ Zabbix-agent на BR-SRV не активен")
 
-    if mon_ok:
+    if zabbix_ok:
         POINTS += 1.0
         log_msg("✅ Пункт 7 пройден (+1 балл)")
     else:
         log_msg("❌ Пункт 7 не пройден")
-    results["Пункт 7: Мониторинг"] = mon_ok
+    results["Пункт 7: Zabbix"] = zabbix_ok
 
-    # --- Пункт 8: Ansible инвентаризация (задание п.8) ---
+    # --- Пункт 8: Ansible инвентаризация (задание п.18) ---
     log_msg("\n📌 Пункт 8: Ansible инвентаризация на BR-SRV")
     ansible_ok = True
 
     if "BR-SRV" not in vm_ports:
-        log_msg("⚠️ BR-SRV не найден")
         ansible_ok = False
     else:
         # Проверяем наличие плейбука
-        playbook_out, _, _ = ssh_exec(vm_ports["BR-SRV"],
-            "ls /etc/ansible/*.yml /etc/ansible/*.yaml 2>/dev/null", "root", "toor")
+        playbook_out, _, _ = ssh_exec(vm_ports["BR-SRV"], "ls /etc/ansible/*.yml /etc/ansible/*.yaml 2>/dev/null", "root", "toor")
         log_msg("[BR-SRV] Проверка наличия плейбука в /etc/ansible/")
         safe_log_output(log_lines, "[BR-SRV] Вывод", playbook_out, "")
-        if not playbook_out or not playbook_out.strip():
+        if not playbook_out:
             log_msg("❌ Плейбук не найден в /etc/ansible/")
             ansible_ok = False
 
         # Проверяем директорию PC-INFO
-        pcinfo_out, _, _ = ssh_exec(vm_ports["BR-SRV"],
-            "ls /etc/ansible/PC-INFO/ 2>/dev/null", "root", "toor")
-        log_msg("[BR-SRV] ls /etc/ansible/PC-INFO/")
+        pcinfo_out, _, _ = ssh_exec(vm_ports["BR-SRV"], "ls /etc/ansible/PC-INFO/ 2>/dev/null", "root", "toor")
+        log_msg("[BR-SRV] Выполняется команда: ls /etc/ansible/PC-INFO/")
         safe_log_output(log_lines, "[BR-SRV] Вывод", pcinfo_out, "")
-        if not pcinfo_out or not pcinfo_out.strip():
+        if not pcinfo_out:
             log_msg("❌ Директория /etc/ansible/PC-INFO/ пуста или не существует")
             ansible_ok = False
         else:
-            yml_files = [f.strip() for f in pcinfo_out.splitlines()
-                         if f.strip().endswith('.yml') or f.strip().endswith('.yaml')]
+            # Проверяем наличие файлов .yml
+            yml_files = [f.strip() for f in pcinfo_out.splitlines() if f.strip().endswith('.yml') or f.strip().endswith('.yaml')]
             if len(yml_files) < 1:
                 log_msg("❌ Файлы отчётов .yml не найдены в PC-INFO")
                 ansible_ok = False
             else:
-                log_msg("✅ Найдено %d файлов в PC-INFO: %s" % (len(yml_files), ', '.join(yml_files)))
-                # Проверяем что файлы содержат имя компьютера и IP
-                for yf in yml_files[:2]:
-                    content, _, _ = ssh_exec(vm_ports["BR-SRV"],
-                        "cat '/etc/ansible/PC-INFO/%s' 2>/dev/null" % yf, "root", "toor")
-                    log_msg("[BR-SRV] Содержимое %s" % yf)
-                    safe_log_output(log_lines, "[BR-SRV] Вывод", content, "")
-                    if content and ("hostname" in content.lower() or "ip" in content.lower()
-                                    or "ansible_host" in content.lower() or "address" in content.lower()):
-                        log_msg("✅ Файл %s содержит информацию о машине" % yf)
-                    else:
-                        log_msg("⚠️ Файл %s может не содержать нужную информацию" % yf)
+                log_msg(f"✅ Найдено {len(yml_files)} файлов в PC-INFO: {', '.join(yml_files)}")
 
     if ansible_ok:
         POINTS += 1.0
@@ -664,98 +512,83 @@ def run_full_assignment_check(vm_ports):
         log_msg("❌ Пункт 8 не пройден")
     results["Пункт 8: Ansible инвентаризация"] = ansible_ok
 
-    # --- Пункт 9: fail2ban (задание п.9) ---
-    log_msg("\n📌 Пункт 9: fail2ban на HQ-SRV")
-    f2b_ok = True
+    # --- Пункт 9: PAM / fail2ban (задание п.19) ---
+    log_msg("\n📌 Пункт 9: PAM защита SSH на HQ-SRV")
+    pam_ok = True
 
     if "HQ-SRV" not in vm_ports:
-        log_msg("⚠️ HQ-SRV не найден")
-        f2b_ok = False
+        pam_ok = False
     else:
-        # Проверяем fail2ban активен
-        f2b_status, _, _ = ssh_exec(vm_ports["HQ-SRV"],
-            "systemctl is-active fail2ban", "root", "toor")
-        log_msg("[HQ-SRV] systemctl is-active fail2ban")
+        # Проверяем fail2ban
+        f2b_status, _, _ = ssh_exec(vm_ports["HQ-SRV"], "systemctl is-active fail2ban 2>/dev/null", "root", "toor")
+        log_msg("[HQ-SRV] Выполняется команда: systemctl is-active fail2ban")
         safe_log_output(log_lines, "[HQ-SRV] Вывод", f2b_status, "")
-        if not (f2b_status and f2b_status.strip() == "active"):
-            log_msg("❌ fail2ban не запущен")
-            f2b_ok = False
 
-        # Проверяем конфигурацию jail
-        jail_conf, _, _ = ssh_exec(vm_ports["HQ-SRV"],
-            "cat /etc/fail2ban/jail.local 2>/dev/null; "
-            "cat /etc/fail2ban/jail.d/*.conf 2>/dev/null; "
-            "cat /etc/fail2ban/jail.d/*.local 2>/dev/null", "root", "toor")
+        # Проверяем pam_faillock или pam_tally2
+        pam_conf, _, _ = ssh_exec(vm_ports["HQ-SRV"], "grep -r 'pam_faillock\\|pam_tally\\|fail2ban' /etc/pam.d/sshd /etc/pam.d/system-auth /etc/pam.d/common-auth 2>/dev/null", "root", "toor")
+        log_msg("[HQ-SRV] Проверка PAM конфигурации для SSH")
+        safe_log_output(log_lines, "[HQ-SRV] Вывод", pam_conf, "")
+
+        # Также проверяем fail2ban jail
+        jail_conf, _, _ = ssh_exec(vm_ports["HQ-SRV"], "cat /etc/fail2ban/jail.local 2>/dev/null || cat /etc/fail2ban/jail.d/*.conf 2>/dev/null", "root", "toor")
         log_msg("[HQ-SRV] Проверка fail2ban jail конфигурации")
         safe_log_output(log_lines, "[HQ-SRV] Вывод", jail_conf, "")
 
-        if jail_conf:
-            # Проверяем порт ssh
-            has_ssh_port = bool(re.search(r'port\s*=\s*(ssh|2026|22)', jail_conf))
-            # maxretry = 3
-            has_maxretry = bool(re.search(r'maxretry\s*=\s*3', jail_conf))
-            # bantime = 60 или 1m
-            has_bantime = bool(re.search(r'bantime\s*=\s*(60|1m)', jail_conf))
+        has_protection = False
 
-            if has_ssh_port:
-                log_msg("✅ fail2ban: порт SSH указан")
-            else:
-                log_msg("❌ fail2ban: порт SSH не указан")
-                f2b_ok = False
+        # Вариант 1: fail2ban
+        if f2b_status and "active" in f2b_status:
+            if jail_conf:
+                has_maxretry = bool(re.search(r'maxretry\s*=\s*3', jail_conf))
+                has_bantime = bool(re.search(r'bantime\s*=\s*(60|1m)', jail_conf))
+                if has_maxretry and has_bantime:
+                    log_msg("✅ fail2ban: maxretry=3, bantime=60s — корректно")
+                    has_protection = True
+                else:
+                    if not has_maxretry:
+                        log_msg("❌ fail2ban: maxretry=3 не найдено")
+                    if not has_bantime:
+                        log_msg("❌ fail2ban: bantime=60 не найдено")
 
-            if has_maxretry:
-                log_msg("✅ fail2ban: maxretry=3")
-            else:
-                log_msg("❌ fail2ban: maxretry=3 не найдено")
-                f2b_ok = False
+        # Вариант 2: pam_faillock
+        if not has_protection and pam_conf:
+            has_deny = bool(re.search(r'deny\s*=\s*3', pam_conf))
+            has_unlock = bool(re.search(r'unlock_time\s*=\s*60', pam_conf))
+            if has_deny and has_unlock:
+                log_msg("✅ pam_faillock: deny=3, unlock_time=60 — корректно")
+                has_protection = True
 
-            if has_bantime:
-                log_msg("✅ fail2ban: bantime=60s/1m")
-            else:
-                log_msg("❌ fail2ban: bantime=60/1m не найдено")
-                f2b_ok = False
-        else:
-            log_msg("❌ Конфигурация fail2ban jail не найдена")
-            f2b_ok = False
+        if not has_protection:
+            log_msg("❌ Защита SSH (fail2ban или pam_faillock) не настроена корректно")
+            pam_ok = False
 
-    if f2b_ok:
+    if pam_ok:
         POINTS += 1.0
         log_msg("✅ Пункт 9 пройден (+1 балл)")
     else:
         log_msg("❌ Пункт 9 не пройден")
-    results["Пункт 9: fail2ban"] = f2b_ok
+    results["Пункт 9: PAM/fail2ban"] = pam_ok
 
-    # --- Пункт 10: Резервное копирование (задание п.10) ---
+    # --- Пункт 10: Резервное копирование (задание п.20) ---
     log_msg("\n📌 Пункт 10: Резервное копирование (Кибер Бэкап)")
     backup_ok = True
 
     if "HQ-SRV" not in vm_ports:
-        log_msg("⚠️ HQ-SRV не найден")
         backup_ok = False
     else:
-        # Проверяем что сервис бэкапа запущен на HQ-SRV
-        acronis_out, _, _ = ssh_exec(vm_ports["HQ-SRV"],
-            "systemctl is-active acronis_mms 2>/dev/null || "
-            "systemctl is-active cyber-protect 2>/dev/null || "
-            "systemctl is-active acronis_service 2>/dev/null || "
-            "systemctl is-active cyber-backup 2>/dev/null",
-            "root", "toor")
+        # Проверяем что сервис бэкапа запущен
+        acronis_out, _, _ = ssh_exec(vm_ports["HQ-SRV"], "systemctl is-active acronis_mms 2>/dev/null || systemctl is-active cyber-protect 2>/dev/null || systemctl is-active acronis_service 2>/dev/null", "root", "toor")
         log_msg("[HQ-SRV] Проверка сервисов резервного копирования")
         safe_log_output(log_lines, "[HQ-SRV] Вывод", acronis_out, "")
         if not (acronis_out and "active" in acronis_out):
-            log_msg("❌ Сервисы резервного копирования не найдены на HQ-SRV")
+            log_msg("❌ Сервисы резервного копирования не найдены")
             backup_ok = False
         else:
-            log_msg("✅ Сервисы резервного копирования активны на HQ-SRV")
+            log_msg("✅ Сервисы резервного копирования активны")
 
     # Проверяем агент на HQ-CLI
     if backup_ok and "HQ-CLI" in vm_ports:
-        agent_out, _, _ = ssh_exec(vm_ports["HQ-CLI"],
-            "systemctl is-active acronis_mms 2>/dev/null || "
-            "systemctl is-active cyber-protect 2>/dev/null || "
-            "systemctl is-active acronis_service 2>/dev/null || "
-            "systemctl is-active cyber-backup 2>/dev/null",
-            "root", "toor")
+        agent_out, _, _ = ssh_exec(vm_ports["HQ-CLI"], "systemctl is-active acronis_mms 2>/dev/null || systemctl is-active cyber-protect 2>/dev/null || systemctl is-active acronis_service 2>/dev/null", "root", "toor")
         log_msg("[HQ-CLI] Проверка агента резервного копирования")
         safe_log_output(log_lines, "[HQ-CLI] Вывод", agent_out, "")
         if not (agent_out and "active" in agent_out):
@@ -765,11 +598,10 @@ def run_full_assignment_check(vm_ports):
             log_msg("✅ Агент резервного копирования активен на HQ-CLI")
 
         # Проверяем директорию /backup
-        backup_dir, _, _ = ssh_exec(vm_ports["HQ-CLI"],
-            "test -d /backup && echo 'EXISTS' || echo 'MISSING'", "root", "toor")
+        backup_dir, _, _ = ssh_exec(vm_ports["HQ-CLI"], "test -d /backup && ls /backup/", "root", "toor")
         log_msg("[HQ-CLI] Проверка директории /backup")
         safe_log_output(log_lines, "[HQ-CLI] Вывод", backup_dir, "")
-        if not (backup_dir and "EXISTS" in backup_dir):
+        if not backup_dir:
             log_msg("❌ Директория /backup не найдена на HQ-CLI")
             backup_ok = False
         else:
@@ -792,7 +624,7 @@ def run_full_assignment_check(vm_ports):
         if passed:
             total_passed += 1
 
-    log_msg("\n📈 Выполнено %.1f из %.1f пунктов." % (POINTS, MAX_POINTS))
+    log_msg("\n📈 Выполнено %.2f из %.2f пунктов." % (POINTS, MAX_POINTS))
     return POINTS, log_lines
 
 

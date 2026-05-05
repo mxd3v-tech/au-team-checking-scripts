@@ -1,0 +1,9 @@
+flask>=2.2.0
+werkzeug>=2.2.0
+requests>=2.27
+pexpect>=4.8
+openpyxl>=3.1.0
+
+# sshpass — системная утилита, НЕ pip-пакет.
+# Установить: apt-get install sshpass  (Debian/Ubuntu)
+#              yum install sshpass      (RHEL/CentOS)

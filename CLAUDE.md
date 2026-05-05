@@ -2,69 +2,121 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Project Overview
+## Repository Structure
 
-Automated assessment checker scripts for the Russian professional exam "ДЭ 09.02.06 — Сетевое и системное администрирование" (Network and System Administration). Scripts validate infrastructure configurations across virtual machines via SSH.
+```
+au-team-checking-scripts/
+├── checkers/         — скрипты автоматической проверки заданий
+├── web/              — веб-интерфейс для запуска проверок (Flask)
+├── report/           — обработчик результатов: генерация Excel-таблицы
+└── tasks/
+    ├── criteria/     — PDF с заданиями по модулям + критерии оценки (docx)
+    └── variants/     — варианты заданий (docx) для раздачи участникам
+```
 
-## File Naming Convention
+## Checkers (`checkers/`)
+
+### Naming Convention
 
 `assignment_checker_test_m{module}v{variant}[_mod].py`
 
-- **m1/m2/m3** — Module 1 (networking), Module 2 (services), Module 3 (advanced services)
-- **v1/v2/v3** — Variants with different parameter values (IPs, usernames, RAID levels, etc.)
-- **_mod** — Scoring versions with `award()` function for graded evaluation per criteria (КО). MAX_POINTS=25 per module.
+- **m1/m2/m3** — Модуль 1 (сеть), Модуль 2 (сервисы), Модуль 3 (продвинутые сервисы)
+- **v1/v2/v3** — Варианты с разными параметрами (IP, имена пользователей, уровни RAID и т.д.)
+- **_mod** — Версия с баллами: функция `award()` для дробной оценки по КО. MAX_POINTS=25 на модуль.
+- **federal_code_** — Скрипты для федерального демонстрационного экзамена (другая топология).
 
-Base scripts (9) output pass/fail per checkpoint. Mod scripts (3) output numeric scores with partial credit.
+Базовые скрипты (без `_mod`) выводят пройдено/не пройдено по каждому пункту.
+`_mod`-скрипты выводят числовой балл с частичным зачётом.
 
-## Running and Verifying
+### Entry Point
 
-```bash
-# Syntax check a single file
-python3 -m py_compile assignment_checker_test_m2v1.py
-
-# Syntax check all files
-for f in assignment_checker_test_*.py; do python3 -m py_compile "$f" && echo "OK: $f"; done
+```python
+def run_full_assignment_check(vm_ports: dict[str, str]) -> tuple[int|float, list[str]]:
+    return score, log_lines
 ```
 
-Scripts are not run locally — they execute remotely via `ssh_exec()` against lab VMs. Entry point: `run_full_assignment_check(vm_ports)` where `vm_ports` is a `dict[str, str]` mapping device names to SSH port numbers.
+`vm_ports` — словарь `{"имя_ВМ": "ssh_порт"}`. Порт `"N/A"` означает ВМ не найдена.
 
-## Architecture
+### Devices
 
-Each script contains:
+`HQ-SRV`, `BR-SRV`, `HQ-CLI`, `BR-CLI`, `HQ-RTR`, `BR-RTR`, `ISP`. Domain: `au-team.irpo`.
+`BR-FW` присутствует в топологии, но скриптами **не проверяется**.
 
-1. **Credentials** — `SRV_CREDENTIALS` (root/toor), `RTR_CREDENTIALS` (admin/admin)
-2. **Execution functions:**
-   - `ssh_exec(port, cmd, user, pass)` — Linux servers via sshpass+ssh
-   - `rtr_exec(port, user, pass, cmd)` — EcoRouterOS routers via pexpect (interactive)
-   - `rtr_exec_with_enable(...)` — Router privileged mode
-3. **Check sections** — Each "Пункт" validates a specific service/config
-4. **Scoring** (_mod only) — `award(name, score, max_score, details)` with partial credit
+### Key Conventions
 
-Devices: HQ-SRV, BR-SRV, HQ-CLI, BR-CLI, HQ-RTR, BR-RTR, ISP. Domain: `au-team.irpo`.
+- Предпочитать нативные утилиты Linux вместо cat/grep-пайплайнов:
+  - `sshd -T` вместо `cat sshd_config`
+  - `findmnt` вместо `mount | grep`
+  - `mdadm --detail` вместо `cat /proc/mdstat`
+  - `ss -tlnH sport = :PORT` вместо `ss -tuln | grep`
+  - `systemctl is-active SERVICE` вместо `systemctl list-units | grep`
+  - `htpasswd -vb` вместо `cat .htpasswd`
+- `cat/grep` допустимы там, где нет нативной альтернативы: compose.yaml, jail.local, logrotate, nginx-конфиги, PAM, ansible inventory
+- v2/v3 отличаются от v1 **только значениями параметров** — структурные изменения из v1 переносить во все варианты
+- Весь пользовательский текст на русском языке
 
-## Key Conventions
+### Running and Verifying
 
-- **Prefer native Linux utilities** over cat/grep pipelines for remote commands:
-  - `sshd -T` instead of `cat sshd_config`
-  - `findmnt` instead of `mount | grep`
-  - `mdadm --detail` instead of `cat /proc/mdstat`
-  - `ss -tlnH sport = :PORT` instead of `ss -tuln | grep`
-  - `systemctl is-active SERVICE` instead of `systemctl list-units | grep`
-  - `htpasswd -vb` instead of `cat .htpasswd`
-- **Domain user auth**: SSH as domain user first (creates profile), fallback to `wbinfo -a` — never use `su -l user -c 'whoami'`
-- **cat/grep is acceptable** where no native alternative exists: compose.yaml, fail2ban jail.local, logrotate configs, nginx configs, PAM configs, ansible inventory
-- All user-facing text is in Russian
-- `pexpect` is optional — scripts degrade gracefully without it
-- v2/v3 differ from v1 **only in parameter values** — propagate structural changes from v1 to v2/v3
+```bash
+# Проверка синтаксиса одного файла
+python3 -m py_compile checkers/assignment_checker_test_m2v1.py
 
-## Criteria Reference
+# Проверка синтаксиса всех файлов
+for f in checkers/assignment_checker_test_*.py; do python3 -m py_compile "$f" && echo "OK: $f"; done
+```
 
-`критерии.docx` contains official scoring criteria. Each module has 13 КО (criteria) totaling 25 points. The "Отчёт ГОСТ" criterion (1 point) requires manual evaluation and is not automated.
+## Web Interface (`web/`)
 
-For _mod scripts: verify `MAX_POINTS` equals the sum of unique `award()` max_score values plus the manual criterion.
+Flask-приложение для запуска проверок через браузер.
+
+```bash
+cd web/
+python3 main.py              # веб-сервер на 0.0.0.0:5000
+python3 main.py --cli        # curses TUI
+```
+
+Логин: `admin` / `password`.
+
+**Зависимости:** `flask>=2.2`, `requests`, `pexpect` (опционально), `sshpass` (системный пакет).
+
+```bash
+pip install -r web/requirements.txt
+apt-get install sshpass
+```
+
+Приложение запускается **на самом сервере PNETLab/EVE-NG**. SSH-соединения направлены на `localhost` — QEMU-машины экспортируют порты локально.
+
+## Report Generator (`report/`)
+
+Генерирует Excel-таблицу из результатов проверок.
+
+```bash
+# Из веб-интерфейса: вкладка «Результаты» → загрузить ZIP-файлы → скачать Excel
+# Или локально:
+python3 report/make_report.py results_m1.zip results_m1_mod.zip results_m2.zip ...
+```
+
+**Формат ZIP-файлов** (скачиваются из веб-интерфейса после проверки):
+`results_{вариант}_{ip}_{дд_мм_гггг_чч:мм}.zip`
+
+Внутри ZIP: `outstend_{вариант}_{студент}-{ip}.txt` — лог проверки каждого студента.
+
+**Итоговая Excel** содержит листы MOD-1, MOD-2, MOD-3, ИТОГ.
+Колонки: `Имя пользователя | Узел | Вариант | Пункты | Балл по КО | Итог по логам`.
+
+### Вспомогательные скрипты
+
+- `report/points_extractor.py` — извлекает баллы из лог-файлов
+- `report/log_extractor.py` — извлекает итоговый блок из лог-файлов для вставки в Excel
+
+## Tasks (`tasks/`)
+
+- `tasks/criteria/` — PDF с заданиями (МОДУЛЬ-1/2/3.pdf) и критерии оценки (критерии.docx)
+- `tasks/variants/` — варианты заданий для раздачи участникам (М1-В1...М3-В3)
 
 ## Dependencies
 
-- Python 3 (stdlib only)
-- `sshpass` (required at runtime on the checking machine)
-- `pexpect` (optional, for EcoRouterOS router checks)
+- Python 3 (stdlib)
+- `sshpass` — системный пакет (не pip)
+- `pexpect` — опционально, для проверки EcoRouterOS-роутеров
+- `openpyxl` — для генерации Excel (`pip install openpyxl`)

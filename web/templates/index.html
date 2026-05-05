@@ -1,0 +1,1278 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PNETLAB Checker</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+{% if login_required %}
+<div class="container">
+    <div class="login-wrap">
+        <h1>PNETLAB Checker</h1>
+        <p style="color:var(--text-muted);margin-bottom:24px;font-size:0.9rem;">Войдите для продолжения</p>
+        <form id="loginForm">
+            <label>Логин</label>
+            <input type="text" name="username" placeholder="admin" required autocomplete="username">
+            <label>Пароль</label>
+            <input type="password" name="password" placeholder="..." required autocomplete="current-password">
+            <button type="submit" style="width:100%;justify-content:center;margin-top:8px;">Войти</button>
+        </form>
+        <div id="loginMessage" class="alert alert-error" style="display:none;"></div>
+    </div>
+</div>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const form = document.getElementById('loginForm');
+    const msg = document.getElementById('loginMessage');
+    form.addEventListener('submit', function(e) {
+        e.preventDefault();
+        fetch('/login', {method: 'POST', body: new FormData(form)}).then(r => r.json()).then(d => {
+            if (d.success) { location.reload(); }
+            else { msg.textContent = d.message || 'Ошибка входа'; msg.style.display = 'block'; }
+        });
+    });
+});
+</script>
+{% else %}
+<div class="container">
+    <div class="header-bar">
+        <div>
+            <h1>PNETLAB Checker <span class="au-team">#AU_team</span></h1>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;">
+            <button class="btn btn-ghost btn-sm" id="toggleNodesBtn">Узлы</button>
+            <button class="btn btn-red btn-sm" id="logoutBtn">Выйти</button>
+        </div>
+    </div>
+
+    <!-- Nodes panel -->
+    <div id="nodesPanel" style="display:none;">
+        <div class="section">
+            <div class="section-title">Управление узлами</div>
+            <div class="toolbar">
+                <button class="btn btn-green btn-sm" id="showAddNodeBtn">+ Добавить узел</button>
+                <button class="btn btn-ghost btn-sm" id="refreshNodesBtn">Обновить список</button>
+            </div>
+            <div id="addNodeForm" style="display:none;margin-bottom:16px;padding:14px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+                    <div><label>Название</label><input type="text" id="nodeName" placeholder="pnet-server-1"></div>
+                    <div><label>IP-адрес</label><input type="text" id="nodeIp" placeholder="192.168.1.10"></div>
+                    <div><label>Логин</label><input type="text" id="nodeUsername" placeholder="api"></div>
+                    <div><label>Пароль</label><input type="password" id="nodePassword"></div>
+                </div>
+                <div style="margin-top:10px;display:flex;gap:8px;">
+                    <button class="btn btn-green btn-sm" id="submitNodeBtn">Добавить</button>
+                    <button class="btn btn-ghost btn-sm" id="cancelAddNodeBtn">Отмена</button>
+                </div>
+                <div id="addNodeMessage" class="alert" style="margin-top:8px;"></div>
+            </div>
+            <div id="nodesList"><div class="empty">Загрузка...</div></div>
+        </div>
+    </div>
+
+    <!-- Selection -->
+    <div id="selectionSection">
+        <div class="section">
+            <div class="section-title">Узел и пользователи</div>
+            <div style="display:flex;gap:10px;align-items:flex-end;margin-bottom:12px;">
+                <div style="flex:1;">
+                    <label>Выберите узел</label>
+                    <select id="nodeSelector">
+                        {% for node in nodes %}
+                        <option value="{{ node.name }}">{{ node.name }} ({{ node.ip }})</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <button class="btn btn-ghost btn-sm" id="refreshUsersBtn" style="margin-bottom:8px;">Обновить</button>
+            </div>
+            <!-- Быстрый выбор группы + массовое назначение варианта -->
+            <div id="quickSelectBar" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;
+                 margin-bottom:10px;padding:10px 12px;background:var(--surface);
+                 border:1px solid var(--border);border-radius:var(--radius-sm);">
+                <span style="font-size:0.82rem;color:var(--text-muted);white-space:nowrap;">Группа:</span>
+                <button class="btn btn-cyan btn-sm" id="filterM1Btn" type="button">m1</button>
+                <button class="btn btn-cyan btn-sm" id="filterM2Btn" type="button">m2</button>
+                <button class="btn btn-sm" id="filterAllBtn" type="button">Все</button>
+                <button class="btn btn-ghost btn-sm" id="filterClearBtn" type="button">Сбросить</button>
+                <span style="margin-left:6px;font-size:0.82rem;color:var(--text-muted);white-space:nowrap;">Вариант для выбранных:</span>
+                <select id="bulkCheckSelect" style="flex:1;min-width:160px;max-width:260px;">
+                    <option value="">— выбрать вариант —</option>
+                    {% for check in checks %}<option value="{{ check.name }}">{{ check.name }}</option>{% endfor %}
+                </select>
+                <button class="btn btn-green btn-sm" id="applyBulkCheckBtn" type="button">Применить</button>
+            </div>
+            <div class="select-all-row">
+                <input type="checkbox" id="selectAllUsers">
+                <label for="selectAllUsers" style="cursor:pointer;">Выбрать всех / снять выбор</label>
+                <span id="selectedCount" style="margin-left:auto;color:var(--text-muted);font-size:0.8rem;"></span>
+            </div>
+            <div id="usersList"><div class="empty">Загрузка пользователей...</div></div>
+
+            <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">
+                <div style="font-weight:600;margin-bottom:6px;">Запуск ВМ в проекте</div>
+                <div style="color:var(--text-muted);font-size:0.82rem;margin-bottom:8px;">
+                    Поднимает все ноды (QEMU) лаб у выбранных студентов. Не запускает проверку.
+                </div>
+                <div class="toolbar" style="flex-wrap:wrap;gap:8px;">
+                    <button class="btn btn-cyan btn-sm" id="startGroupM1Btn" type="button">▶ Запустить m1 (Student-m1-*)</button>
+                    <button class="btn btn-cyan btn-sm" id="startGroupM2Btn" type="button">▶ Запустить m2 (Student-m2-*)</button>
+                    <button class="btn btn-cyan btn-sm" id="startGroupAllBtn" type="button">▶ Запустить всех</button>
+                    <button class="btn btn-sm" id="startSelectedBtn" type="button">▶ Запустить отмеченных</button>
+                    <button class="btn btn-ghost btn-sm" id="startPickerBtn" type="button">▶ Выбор из списка…</button>
+                    <label style="display:inline-flex;align-items:center;gap:6px;font-size:0.85rem;cursor:pointer;">
+                        <input type="checkbox" id="allLabsChk"> все лабы пользователя
+                    </label>
+                </div>
+                <div style="font-weight:600;margin:10px 0 6px;">Остановка ВМ в проекте</div>
+                <div style="color:var(--text-muted);font-size:0.82rem;margin-bottom:8px;">
+                    Останавливает ноды (QEMU) без удаления данных (stop, не destroy).
+                </div>
+                <div class="toolbar" style="flex-wrap:wrap;gap:8px;">
+                    <button class="btn btn-red btn-sm" id="stopGroupM1Btn" type="button">■ Остановить m1</button>
+                    <button class="btn btn-red btn-sm" id="stopGroupM2Btn" type="button">■ Остановить m2</button>
+                    <button class="btn btn-red btn-sm" id="stopGroupAllBtn" type="button">■ Остановить всех</button>
+                    <button class="btn btn-sm" id="stopSelectedBtn" type="button">■ Остановить отмеченных</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="section" style="margin-top:12px;">
+            <div class="section-title">Сгенерированные варианты</div>
+            <div class="toolbar">
+                <button class="btn btn-sm" id="generateVariantsBtn">Сгенерировать вариант</button>
+            </div>
+            <div id="generatedVariantsList"><div class="empty">Нет сгенерированных вариантов</div></div>
+        </div>
+
+        <div style="margin-top:16px;">
+            <button class="btn btn-green" id="startCheckBtn">&#9654; Начать проверку</button>
+        </div>
+    </div>
+
+    <!-- Start nodes logs -->
+    <div id="startLogsSection" style="display:none;">
+        <div class="header-bar" style="margin-bottom:12px;">
+            <div style="display:flex;align-items:center;gap:12px;">
+                <h2 style="margin:0;">Запуск ВМ</h2>
+                <span id="startStatusBadge" style="font-size:0.8rem;color:var(--text-muted);"></span>
+            </div>
+            <div style="display:flex;gap:8px;">
+                <button class="btn btn-red btn-sm" id="cancelStartBtn">Отменить</button>
+                <button class="btn btn-ghost btn-sm" id="closeStartLogsBtn">Закрыть</button>
+            </div>
+        </div>
+        <div class="progress-wrap">
+            <div class="progress-bar" id="startProgressBar" style="width:0%"></div>
+        </div>
+        <div class="progress-label" id="startProgressLabel"></div>
+        <div id="startLogsContainer" style="margin-top:10px;"></div>
+    </div>
+
+    <!-- Stop nodes logs -->
+    <div id="stopLogsSection" style="display:none;">
+        <div class="header-bar" style="margin-bottom:12px;">
+            <div style="display:flex;align-items:center;gap:12px;">
+                <h2 style="margin:0;">Остановка ВМ</h2>
+                <span id="stopStatusBadge" style="font-size:0.8rem;color:var(--text-muted);"></span>
+            </div>
+            <div style="display:flex;gap:8px;">
+                <button class="btn btn-red btn-sm" id="cancelStopBtn">Отменить</button>
+                <button class="btn btn-ghost btn-sm" id="closeStopLogsBtn">Закрыть</button>
+            </div>
+        </div>
+        <div class="progress-wrap">
+            <div class="progress-bar" id="stopProgressBar" style="width:0%"></div>
+        </div>
+        <div class="progress-label" id="stopProgressLabel"></div>
+        <div id="stopLogsContainer" style="margin-top:10px;"></div>
+    </div>
+
+    <!-- Logs -->
+    <div id="logsSection" style="display:none;">
+        <div class="header-bar" style="margin-bottom:12px;">
+            <div style="display:flex;align-items:center;gap:12px;">
+                <h2 style="margin:0;">Лог проверки</h2>
+                <span id="checkStatusBadge" style="font-size:0.8rem;color:var(--text-muted);"></span>
+            </div>
+            <button class="btn btn-red btn-sm" id="cancelCheckBtn">Отменить</button>
+        </div>
+        <div class="progress-wrap">
+            <div class="progress-bar" id="progressBar" style="width:0%"></div>
+        </div>
+        <div class="progress-label" id="progressLabel"></div>
+        <div id="logsContainer" style="margin-top:10px;"></div>
+    </div>
+
+    <!-- Results -->
+    <div id="resultsSection" style="display:none;">
+        <div class="header-bar" style="margin-bottom:12px;">
+            <h2 style="margin:0;">Результаты</h2>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                <a id="dlAllLink" href="/download_all_logs" target="_blank">
+                    <button class="btn btn-green btn-sm">&#8595; Скачать всё (ZIP)</button>
+                </a>
+                <a href="/download_summary" target="_blank">
+                    <button class="btn btn-cyan btn-sm">&#8595; Сводная таблица</button>
+                </a>
+            </div>
+        </div>
+        <table class="results-table" id="resultsTable">
+            <thead>
+                <tr>
+                    <th>Пользователь</th>
+                    <th>Вариант</th>
+                    <th>% выполнения</th>
+                    <th>Лог</th>
+                </tr>
+            </thead>
+            <tbody id="resultsTableBody"></tbody>
+        </table>
+        <div style="margin-top:16px;">
+            <button class="btn btn-ghost" id="backToSelectionBtn">&#8592; Назад к выбору</button>
+        </div>
+    </div>
+
+    <!-- Report builder section -->
+    <div id="reportSection" style="display:none;">
+        <div class="header-bar" style="margin-bottom:12px;">
+            <h2 style="margin:0;">Составить отчёт</h2>
+            <button class="btn btn-ghost btn-sm" id="backToSelectionFromReportBtn">&#8592; Назад</button>
+        </div>
+        <div class="section">
+            <div class="section-title">Загрузить ZIP-архивы результатов</div>
+            <p style="color:var(--text-muted);font-size:0.85rem;margin-bottom:12px;">
+                Загрузите один или несколько ZIP-архивов, скачанных после проверки
+                (m1, m1_mod, m2, m2_mod, m3, m3_mod). Система автоматически определит
+                модуль, вариант и узел из имени файла.
+            </p>
+            <div id="reportDropZone" style="border:2px dashed var(--border);border-radius:var(--radius-sm);
+                 padding:32px;text-align:center;cursor:pointer;transition:border-color .2s;margin-bottom:12px;">
+                <div style="font-size:2rem;margin-bottom:8px;">📂</div>
+                <div style="color:var(--text-muted);font-size:0.9rem;">
+                    Перетащите ZIP-файлы сюда или <span style="color:var(--accent);text-decoration:underline;cursor:pointer;" id="reportBrowseLink">выберите файлы</span>
+                </div>
+                <input type="file" id="reportFileInput" multiple accept=".zip" style="display:none;">
+            </div>
+            <div id="reportFileList" style="margin-bottom:12px;"></div>
+            <div style="display:flex;gap:8px;">
+                <button class="btn btn-green" id="generateReportBtn" disabled>&#8595; Сформировать Excel</button>
+                <button class="btn btn-ghost btn-sm" id="clearReportFilesBtn">Очистить</button>
+            </div>
+            <div id="reportStatus" style="margin-top:10px;"></div>
+        </div>
+    </div>
+
+    <div class="footer">
+        &#169; 2026 #AU_team &nbsp;|&nbsp;
+        <span style="cursor:pointer;color:var(--accent);text-decoration:underline;" id="openReportSectionBtn">Составить отчёт</span>
+    </div>
+</div>
+
+<!-- Modal -->
+<div id="viewModal" class="modal">
+    <div class="modal-content">
+        <button class="modal-close" id="modalClose" title="Закрыть">&times;</button>
+        <h3 id="modalTitle"></h3>
+        <div id="modalContent" class="code-view"></div>
+    </div>
+</div>
+
+<!-- Start picker modal -->
+<div id="startPickerModal" class="modal">
+    <div class="modal-content">
+        <button class="modal-close" id="startPickerClose" title="Закрыть">&times;</button>
+        <h3>Запуск ВМ — выбор пользователей</h3>
+        <div style="margin:8px 0;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+            <input type="text" id="startPickerSearch" placeholder="Поиск..." style="flex:1;min-width:160px;">
+            <button class="btn btn-ghost btn-sm" id="startPickerSelectAll" type="button">Выбрать всех</button>
+            <button class="btn btn-ghost btn-sm" id="startPickerSelectNone" type="button">Снять</button>
+            <button class="btn btn-ghost btn-sm" id="startPickerSelectM1" type="button">Только m1</button>
+            <button class="btn btn-ghost btn-sm" id="startPickerSelectM2" type="button">Только m2</button>
+        </div>
+        <div id="startPickerList" style="max-height:50vh;overflow:auto;border:1px solid var(--border);
+             border-radius:var(--radius-sm);padding:8px;"></div>
+        <div style="margin-top:12px;display:flex;gap:8px;align-items:center;">
+            <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;">
+                <input type="checkbox" id="startPickerAllLabs"> все лабы пользователя
+            </label>
+            <span id="startPickerCount" style="margin-left:auto;color:var(--text-muted);font-size:0.85rem;"></span>
+            <button class="btn btn-green btn-sm" id="startPickerRunBtn" type="button">▶ Запустить</button>
+        </div>
+    </div>
+</div>
+
+<script>
+(function() {
+    'use strict';
+
+    var checks = {{ checks | tojson }};
+    var selected = {};
+    var logPollInterval = null;
+
+    // --- DOM refs ---
+    var logoutBtn         = document.getElementById('logoutBtn');
+    var toggleNodesBtn    = document.getElementById('toggleNodesBtn');
+    var nodesPanel        = document.getElementById('nodesPanel');
+    var showAddNodeBtn    = document.getElementById('showAddNodeBtn');
+    var addNodeFormEl     = document.getElementById('addNodeForm');
+    var cancelAddNodeBtn  = document.getElementById('cancelAddNodeBtn');
+    var submitNodeBtn     = document.getElementById('submitNodeBtn');
+    var addNodeMessage    = document.getElementById('addNodeMessage');
+    var refreshNodesBtn   = document.getElementById('refreshNodesBtn');
+    var nodesList         = document.getElementById('nodesList');
+
+    var nodeSelector      = document.getElementById('nodeSelector');
+    var refreshUsersBtn   = document.getElementById('refreshUsersBtn');
+    var usersList         = document.getElementById('usersList');
+    var selectAllUsers    = document.getElementById('selectAllUsers');
+    var selectedCount     = document.getElementById('selectedCount');
+    var generateBtn       = document.getElementById('generateVariantsBtn');
+    var startCheckBtn     = document.getElementById('startCheckBtn');
+    var cancelCheckBtn    = document.getElementById('cancelCheckBtn');
+
+    var selectionSection  = document.getElementById('selectionSection');
+    var logsSection       = document.getElementById('logsSection');
+    var logsContainer     = document.getElementById('logsContainer');
+    var progressBar       = document.getElementById('progressBar');
+    var progressLabel     = document.getElementById('progressLabel');
+    var checkStatusBadge  = document.getElementById('checkStatusBadge');
+    var resultsSection    = document.getElementById('resultsSection');
+    var resultsTableBody  = document.getElementById('resultsTableBody');
+    var backBtn           = document.getElementById('backToSelectionBtn');
+    var modal             = document.getElementById('viewModal');
+    var modalClose        = document.getElementById('modalClose');
+
+    // ------------------------------------------------------------------ //
+    //  Helpers
+    // ------------------------------------------------------------------ //
+    function el(tag, cls, text) {
+        var e = document.createElement(tag);
+        if (cls) e.className = cls;
+        if (text !== undefined) e.textContent = text;
+        return e;
+    }
+
+    function showAlert(container, msg, type) {
+        container.textContent = msg;
+        container.className = 'alert alert-' + (type === 'error' ? 'error' : 'ok');
+        container.style.display = 'block';
+        setTimeout(function() { container.style.display = 'none'; }, 3000);
+    }
+
+    function openModal(title, content) {
+        document.getElementById('modalTitle').textContent = title;
+        document.getElementById('modalContent').textContent = content;
+        modal.style.display = 'block';
+    }
+
+    // ------------------------------------------------------------------ //
+    //  Auth
+    // ------------------------------------------------------------------ //
+    logoutBtn.addEventListener('click', function() {
+        fetch('/logout').then(function() { location.reload(); });
+    });
+
+    // ------------------------------------------------------------------ //
+    //  Nodes panel
+    // ------------------------------------------------------------------ //
+    toggleNodesBtn.addEventListener('click', function() {
+        var vis = nodesPanel.style.display !== 'none';
+        nodesPanel.style.display = vis ? 'none' : 'block';
+        if (!vis) loadNodesInfo();
+    });
+
+    showAddNodeBtn.addEventListener('click', function() {
+        addNodeFormEl.style.display = addNodeFormEl.style.display === 'none' ? 'block' : 'none';
+    });
+    cancelAddNodeBtn.addEventListener('click', function() { addNodeFormEl.style.display = 'none'; });
+    refreshNodesBtn.addEventListener('click', loadNodesInfo);
+
+    submitNodeBtn.addEventListener('click', function() {
+        var data = {
+            name:     document.getElementById('nodeName').value.trim(),
+            ip:       document.getElementById('nodeIp').value.trim(),
+            username: document.getElementById('nodeUsername').value.trim(),
+            password: document.getElementById('nodePassword').value
+        };
+        if (!data.name || !data.ip || !data.username || !data.password) {
+            showAlert(addNodeMessage, 'Все поля обязательны', 'error'); return;
+        }
+        fetch('/add_node', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(data)
+        }).then(function(r) { return r.json(); }).then(function(res) {
+            if (res.success) {
+                showAlert(addNodeMessage, 'Узел добавлен', 'ok');
+                ['nodeName','nodeIp','nodeUsername','nodePassword'].forEach(function(id) {
+                    document.getElementById(id).value = '';
+                });
+                setTimeout(function() { addNodeFormEl.style.display = 'none'; loadNodesInfo(); }, 1200);
+            } else {
+                showAlert(addNodeMessage, res.message || 'Ошибка', 'error');
+            }
+        });
+    });
+
+    function loadNodesInfo() {
+        while (nodesList.firstChild) nodesList.removeChild(nodesList.firstChild);
+        nodesList.appendChild(el('div', 'empty', 'Загрузка...'));
+        fetch('/get_nodes').then(function(r) { return r.json(); }).then(function(data) {
+            while (nodesList.firstChild) nodesList.removeChild(nodesList.firstChild);
+            if (!data.success || !data.nodes.length) {
+                nodesList.appendChild(el('div', 'empty', 'Нет добавленных узлов')); return;
+            }
+            data.nodes.forEach(function(node) {
+                var row = el('div', 'node-item');
+
+                var info = el('div');
+                var nameSpan = el('span', 'node-name', node.name);
+                var ipSpan = el('span', 'node-ip', node.ip);
+                info.appendChild(nameSpan);
+                info.appendChild(ipSpan);
+
+                var btns = el('div', 'btn-group');
+                var bInfo = el('button', 'btn btn-cyan btn-sm', 'Инфо');
+                var bDel  = el('button', 'btn btn-red btn-sm', 'Удалить');
+                var bDest = el('button', 'btn btn-red btn-sm', 'Остановить все ноды');
+                btns.appendChild(bInfo);
+                btns.appendChild(bDel);
+                btns.appendChild(bDest);
+
+                row.appendChild(info);
+                row.appendChild(btns);
+                nodesList.appendChild(row);
+
+                bInfo.addEventListener('click', function() {
+                    openModal('Узел: ' + node.name, 'Загрузка...');
+                    fetch('/get_node_info/' + encodeURIComponent(node.name))
+                        .then(function(r) { return r.json(); })
+                        .then(function(d) {
+                            if (!d.success) { document.getElementById('modalContent').textContent = 'Ошибка: ' + d.message; return; }
+                            var lines = [d.info.name + ' (' + d.info.ip + ')', 'Запущено нод: ' + d.info.total_running_labs, ''];
+                            d.info.users.forEach(function(u) {
+                                lines.push('  ' + u.username + ' (pod ' + u.pod + ') — лабы: ' + u.running_labs.join(', '));
+                            });
+                            document.getElementById('modalContent').textContent = lines.join('\n');
+                        });
+                });
+
+                bDel.addEventListener('click', function() {
+                    if (!confirm('Удалить узел "' + node.name + '"?')) return;
+                    fetch('/delete_node/' + encodeURIComponent(node.name), {method: 'DELETE'})
+                        .then(function(r) { return r.json(); })
+                        .then(function(res) { if (res.success) loadNodesInfo(); else alert('Ошибка: ' + res.message); });
+                });
+
+                bDest.addEventListener('click', function() {
+                    if (!confirm('Остановить все ноды во всех лабораториях на "' + node.name + '"?')) return;
+                    fetch('/stop_all_labs/' + encodeURIComponent(node.name))
+                        .then(function(r) { return r.json(); })
+                        .then(function(d) { alert(d.message || 'Готово'); if (d.success) loadNodesInfo(); });
+                });
+            });
+        });
+    }
+
+    // ------------------------------------------------------------------ //
+    //  Users
+    // ------------------------------------------------------------------ //
+    function loadNodeSelectorAndUsers() {
+        fetch('/get_nodes').then(function(r) { return r.json(); }).then(function(data) {
+            if (!data.success || !data.nodes.length) return;
+            var cur = nodeSelector.value;
+            while (nodeSelector.firstChild) nodeSelector.removeChild(nodeSelector.firstChild);
+            data.nodes.forEach(function(node) {
+                var opt = document.createElement('option');
+                opt.value = node.name;
+                opt.textContent = node.name + ' (' + node.ip + ')';
+                nodeSelector.appendChild(opt);
+            });
+            if (cur) nodeSelector.value = cur;
+            loadUsersByNode();
+        });
+    }
+
+    function loadUsersByNode() {
+        var nodeName = nodeSelector.value;
+        if (!nodeName) return;
+        while (usersList.firstChild) usersList.removeChild(usersList.firstChild);
+        usersList.appendChild(el('div', 'empty', 'Загрузка пользователей...'));
+
+        fetch('/get_node_users/' + encodeURIComponent(nodeName))
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                while (usersList.firstChild) usersList.removeChild(usersList.firstChild);
+                if (!data.success) {
+                    usersList.appendChild(el('div', 'error', 'Ошибка: ' + data.message)); return;
+                }
+                if (!data.users.length) {
+                    usersList.appendChild(el('div', 'empty', 'Нет активных пользователей на этом узле')); return;
+                }
+                data.users.forEach(function(user) {
+                    var row = el('div', 'user-row');
+
+                    var cb = document.createElement('input');
+                    cb.type = 'checkbox'; cb.name = 'userCheckbox'; cb.value = user.name; cb.id = 'chk_' + user.name;
+
+                    var lbl = document.createElement('label');
+                    lbl.htmlFor = 'chk_' + user.name;
+                    lbl.appendChild(document.createTextNode(user.name + ' '));
+                    var meta = el('span', 'user-meta', '(лаб: ' + user.lab_count + ')');
+                    lbl.appendChild(meta);
+
+                    var sel = document.createElement('select');
+                    sel.name = 'variantSelect'; sel.dataset.user = user.name;
+                    var defOpt = document.createElement('option');
+                    defOpt.value = ''; defOpt.textContent = '— вариант —'; sel.appendChild(defOpt);
+                    checks.forEach(function(c) {
+                        var opt = document.createElement('option');
+                        opt.value = c.name; opt.textContent = c.name + ' — ' + c.description;
+                        sel.appendChild(opt);
+                    });
+
+                    row.appendChild(cb); row.appendChild(lbl); row.appendChild(sel);
+                    usersList.appendChild(row);
+                    cb.addEventListener('change', updateSelectedCount);
+                });
+                updateSelectedCount();
+            });
+    }
+
+    nodeSelector.addEventListener('change', loadUsersByNode);
+    refreshUsersBtn.addEventListener('click', loadUsersByNode);
+
+    selectAllUsers.addEventListener('change', function() {
+        var cbs = document.querySelectorAll('input[name="userCheckbox"]');
+        cbs.forEach(function(cb) { cb.checked = selectAllUsers.checked; });
+        updateSelectedCount();
+    });
+
+    function updateSelectedCount() {
+        var checked = document.querySelectorAll('input[name="userCheckbox"]:checked').length;
+        var total   = document.querySelectorAll('input[name="userCheckbox"]').length;
+        selectedCount.textContent = checked > 0 ? ('Выбрано: ' + checked + ' / ' + total) : '';
+        selectAllUsers.indeterminate = checked > 0 && checked < total;
+        selectAllUsers.checked = total > 0 && checked === total;
+    }
+
+    // ------------------------------------------------------------------ //
+    //  Generated variants
+    // ------------------------------------------------------------------ //
+    function loadGeneratedVariants() {
+        var list = document.getElementById('generatedVariantsList');
+        while (list.firstChild) list.removeChild(list.firstChild);
+        var gen = checks.filter(function(c) { return c.type === 'generated'; });
+        if (!gen.length) { list.appendChild(el('div', 'empty', 'Нет сгенерированных вариантов')); return; }
+        gen.forEach(function(check) {
+            var m = check.name.match(/task(\d+)$/);
+            if (!m) return;
+            var taskNum = m[1];
+            var row = el('div', 'variant-item');
+            var nameSpan = el('span', 'variant-name', check.name + ' — ' + check.description);
+            var bCode = el('button', 'btn btn-cyan btn-sm', 'Код');
+            var bTask = el('button', 'btn btn-ghost btn-sm', 'Задание');
+            var bDel  = el('button', 'btn btn-red btn-sm', 'Удалить');
+            row.appendChild(nameSpan); row.appendChild(bCode); row.appendChild(bTask); row.appendChild(bDel);
+            list.appendChild(row);
+
+            bCode.addEventListener('click', function() { viewVariant('assignment_checker_' + check.name + '.py'); });
+            bTask.addEventListener('click', function() { viewTask(taskNum); });
+            bDel.addEventListener('click', function() { deleteVariant('assignment_checker_' + check.name + '.py'); });
+        });
+    }
+
+    generateBtn.addEventListener('click', function() {
+        generateBtn.disabled = true; generateBtn.textContent = 'Генерация...';
+        fetch('/generate_variants', {method: 'POST'}).then(function(r) { return r.json(); }).then(function(d) {
+            generateBtn.disabled = false; generateBtn.textContent = 'Сгенерировать вариант';
+            if (d.success) { location.reload(); } else { alert(d.message || 'Ошибка'); }
+        });
+    });
+
+    function viewVariant(name) {
+        openModal(name, 'Загрузка...');
+        fetch('/view_variant/' + encodeURIComponent(name)).then(function(r) { return r.json(); })
+            .then(function(d) { document.getElementById('modalContent').textContent = d.success ? d.content : 'Ошибка: ' + d.message; });
+    }
+    function viewTask(num) {
+        openModal('Задание task' + num, 'Загрузка...');
+        fetch('/view_task_description/' + encodeURIComponent(num)).then(function(r) { return r.json(); })
+            .then(function(d) { document.getElementById('modalContent').textContent = d.success ? d.content : 'Ошибка: ' + d.message; });
+    }
+    function deleteVariant(name) {
+        if (!confirm('Удалить ' + name + '?')) return;
+        fetch('/delete_variant/' + encodeURIComponent(name), {method: 'POST'}).then(function(r) { return r.json(); })
+            .then(function(d) { if (d.success) location.reload(); else alert(d.message || 'Ошибка'); });
+    }
+
+    // ------------------------------------------------------------------ //
+    //  Check
+    // ------------------------------------------------------------------ //
+    startCheckBtn.addEventListener('click', function() {
+        selected = {};
+        var err = null;
+        document.querySelectorAll('input[name="userCheckbox"]:checked').forEach(function(cb) {
+            var user = cb.value;
+            var sel = document.querySelector('select[data-user="' + user + '"]');
+            if (!sel || !sel.value) { err = 'Выберите вариант для ' + user; return; }
+            selected[user] = sel.value;
+        });
+        if (err) { alert(err); return; }
+        if (!Object.keys(selected).length) { alert('Выберите хотя бы одного пользователя'); return; }
+
+        fetch('/start_check', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({user_variants: selected, node_name: nodeSelector.value})
+        }).then(function(r) { return r.json(); }).then(function(d) {
+            if (!d.success) { alert('Ошибка: ' + d.message); return; }
+            selectionSection.style.display = 'none';
+            logsSection.style.display = 'block';
+            while (logsContainer.firstChild) logsContainer.removeChild(logsContainer.firstChild);
+            while (resultsTableBody.firstChild) resultsTableBody.removeChild(resultsTableBody.firstChild);
+            progressBar.style.width = '0%';
+            progressLabel.textContent = '';
+            startLogPolling();
+        });
+    });
+
+    cancelCheckBtn.addEventListener('click', function() {
+        if (!confirm('Отменить текущую проверку?')) return;
+        fetch('/cancel_check', {method: 'POST'});
+    });
+
+    function startLogPolling() {
+        if (logPollInterval) clearInterval(logPollInterval);
+        logPollInterval = setInterval(function() {
+            fetch('/get_logs').then(function(r) { return r.json(); }).then(function(data) {
+                data.logs.forEach(appendLog);
+            });
+            fetch('/get_check_status').then(function(r) { return r.json(); }).then(function(st) {
+                var pct = st.total > 0 ? Math.round((st.done / st.total) * 100) : 0;
+                progressBar.style.width = pct + '%';
+
+                if (st.running) {
+                    progressLabel.textContent = 'Проверяется: ' + (st.current_user || '...') + ' (' + st.done + '/' + st.total + ')';
+                    checkStatusBadge.textContent = 'Идёт проверка...';
+                    checkStatusBadge.style.color = 'var(--green)';
+                } else {
+                    progressLabel.textContent = 'Завершено: ' + st.done + '/' + st.total;
+                    checkStatusBadge.textContent = st.cancelled ? 'Отменено' : 'Готово';
+                    checkStatusBadge.style.color = st.cancelled ? 'var(--red)' : 'var(--text-muted)';
+                }
+
+                if (!st.running) {
+                    clearInterval(logPollInterval); logPollInterval = null;
+                    fetch('/get_logs').then(function(r) { return r.json(); }).then(function(d) {
+                        d.logs.forEach(appendLog);
+                        setTimeout(showResults, 600);
+                    });
+                }
+            });
+        }, 800);
+    }
+
+    function appendLog(line) {
+        var span = el('span', 'log-line');
+        if (line.charAt(0) === '=' || line.indexOf('ПРОВЕРК') !== -1) span.className += ' sep';
+        else if (line.indexOf('ИТОГО') !== -1 || line.indexOf('сохранён') !== -1 || line.indexOf('ЗАВЕРШЕН') !== -1) span.className += ' ok';
+        else if (line.indexOf('ОШИБКА') !== -1 || line.indexOf('Ошибка') !== -1 || line.indexOf('прерв') !== -1 || line.indexOf('отменена') !== -1) span.className += ' err';
+        span.textContent = line;
+        logsContainer.appendChild(span);
+        logsContainer.appendChild(document.createTextNode('\n'));
+        logsContainer.scrollTop = logsContainer.scrollHeight;
+    }
+
+    function showResults() {
+        logsSection.style.display = 'none';
+        resultsSection.style.display = 'block';
+        fetch('/get_results').then(function(r) { return r.json(); }).then(function(data) {
+            while (resultsTableBody.firstChild) resultsTableBody.removeChild(resultsTableBody.firstChild);
+            Object.keys(selected).forEach(function(user) {
+                var check = selected[user];
+                var res = data.results && data.results[user];
+                var score = res ? res.score : '—';
+
+                var tr = document.createElement('tr');
+                var tdUser  = el('td', '', user);
+                var tdCheck = el('td', '', check);
+                var tdScore = el('td');
+                var badge = el('span', 'score-badge', String(score));
+                if (typeof score === 'number') {
+                    badge.className += score >= 80 ? ' score-high' : score >= 50 ? ' score-mid' : ' score-low';
+                }
+                tdScore.appendChild(badge);
+
+                var tdAction = el('td');
+                var a = document.createElement('a');
+                a.href = '/download_log/' + encodeURIComponent(user);
+                a.target = '_blank';
+                var btn = el('button', 'btn btn-cyan btn-sm', '↓ Лог');
+                a.appendChild(btn); tdAction.appendChild(a);
+
+                tr.appendChild(tdUser); tr.appendChild(tdCheck); tr.appendChild(tdScore); tr.appendChild(tdAction);
+                resultsTableBody.appendChild(tr);
+            });
+        });
+    }
+
+    backBtn.addEventListener('click', function() {
+        resultsSection.style.display = 'none';
+        selectionSection.style.display = 'block';
+        loadGeneratedVariants();
+        loadUsersByNode();
+    });
+
+    // ------------------------------------------------------------------ //
+    //  Modal
+    // ------------------------------------------------------------------ //
+    modalClose.addEventListener('click', function() { modal.style.display = 'none'; });
+    modal.addEventListener('click', function(e) { if (e.target === modal) modal.style.display = 'none'; });
+
+    // ------------------------------------------------------------------ //
+    //  Start nodes (run VMs)
+    // ------------------------------------------------------------------ //
+    var startGroupM1Btn   = document.getElementById('startGroupM1Btn');
+    var startGroupM2Btn   = document.getElementById('startGroupM2Btn');
+    var startGroupAllBtn  = document.getElementById('startGroupAllBtn');
+    var startSelectedBtn  = document.getElementById('startSelectedBtn');
+    var startPickerBtn    = document.getElementById('startPickerBtn');
+    var allLabsChk        = document.getElementById('allLabsChk');
+
+    var startLogsSection  = document.getElementById('startLogsSection');
+    var startLogsContainer= document.getElementById('startLogsContainer');
+    var startProgressBar  = document.getElementById('startProgressBar');
+    var startProgressLabel= document.getElementById('startProgressLabel');
+    var startStatusBadge  = document.getElementById('startStatusBadge');
+    var cancelStartBtn    = document.getElementById('cancelStartBtn');
+    var closeStartLogsBtn = document.getElementById('closeStartLogsBtn');
+
+    var startPickerModal      = document.getElementById('startPickerModal');
+    var startPickerClose      = document.getElementById('startPickerClose');
+    var startPickerSearch     = document.getElementById('startPickerSearch');
+    var startPickerList       = document.getElementById('startPickerList');
+    var startPickerSelectAll  = document.getElementById('startPickerSelectAll');
+    var startPickerSelectNone = document.getElementById('startPickerSelectNone');
+    var startPickerSelectM1   = document.getElementById('startPickerSelectM1');
+    var startPickerSelectM2   = document.getElementById('startPickerSelectM2');
+    var startPickerAllLabs    = document.getElementById('startPickerAllLabs');
+    var startPickerRunBtn     = document.getElementById('startPickerRunBtn');
+    var startPickerCount      = document.getElementById('startPickerCount');
+
+    var startPollInterval = null;
+
+    function appendStartLog(line) {
+        var span = el('span', 'log-line');
+        if (line.charAt(0) === '=' || line.indexOf('Старт операции') !== -1) span.className += ' sep';
+        else if (line.indexOf('▶') !== -1 || line.indexOf('ЗАВЕРШЕНО') !== -1 || line.indexOf('Итог') !== -1) span.className += ' ok';
+        else if (line.indexOf('❌') !== -1 || line.indexOf('ОШИБКА') !== -1 || line.indexOf('ПРЕРВАНО') !== -1 || line.indexOf('⛔') !== -1) span.className += ' err';
+        span.textContent = line;
+        startLogsContainer.appendChild(span);
+        startLogsContainer.appendChild(document.createTextNode('\n'));
+        startLogsContainer.scrollTop = startLogsContainer.scrollHeight;
+    }
+
+    function showStartLogs() {
+        selectionSection.style.display = 'none';
+        logsSection.style.display = 'none';
+        resultsSection.style.display = 'none';
+        startLogsSection.style.display = 'block';
+        while (startLogsContainer.firstChild) startLogsContainer.removeChild(startLogsContainer.firstChild);
+        startProgressBar.style.width = '0%';
+        startProgressLabel.textContent = '';
+        startStatusBadge.textContent = 'Идёт запуск...';
+        startStatusBadge.style.color = 'var(--green)';
+        closeStartLogsBtn.style.display = 'none';
+        cancelStartBtn.style.display = 'inline-block';
+    }
+
+    function startStartPolling() {
+        if (startPollInterval) clearInterval(startPollInterval);
+        startPollInterval = setInterval(function() {
+            fetch('/get_start_logs').then(function(r) { return r.json(); }).then(function(d) {
+                d.logs.forEach(appendStartLog);
+            });
+            fetch('/get_start_status').then(function(r) { return r.json(); }).then(function(st) {
+                var pct = st.total > 0 ? Math.round((st.done / st.total) * 100) : 0;
+                startProgressBar.style.width = pct + '%';
+                if (st.running) {
+                    startProgressLabel.textContent = 'Завершено: ' + st.done + '/' + st.total +
+                        (st.current_user ? ' (последний: ' + st.current_user + ')' : '');
+                    startStatusBadge.textContent = 'Идёт запуск...';
+                    startStatusBadge.style.color = 'var(--green)';
+                } else {
+                    startProgressLabel.textContent = 'Готово: ' + st.done + '/' + st.total;
+                    startStatusBadge.textContent = st.cancelled ? 'Отменено' : 'Готово';
+                    startStatusBadge.style.color = st.cancelled ? 'var(--red)' : 'var(--text-muted)';
+                    closeStartLogsBtn.style.display = 'inline-block';
+                    cancelStartBtn.style.display = 'none';
+                    clearInterval(startPollInterval); startPollInterval = null;
+                    fetch('/get_start_logs').then(function(r) { return r.json(); }).then(function(d) {
+                        d.logs.forEach(appendStartLog);
+                    });
+                }
+            });
+        }, 800);
+    }
+
+    function postStartGroup(group) {
+        var body = {
+            node_name: nodeSelector.value,
+            group: group,
+            all_labs: allLabsChk.checked
+        };
+        fetch('/start_nodes_group', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body)
+        }).then(function(r) { return r.json(); }).then(function(d) {
+            if (!d.success) { alert('Ошибка: ' + d.message); return; }
+            showStartLogs();
+            appendStartLog('Запуск для группы "' + group + '" — пользователей: ' + d.count);
+            startStartPolling();
+        });
+    }
+
+    function postStartUsers(usernames, allLabs) {
+        if (!usernames.length) { alert('Не выбрано ни одного пользователя'); return; }
+        fetch('/start_nodes', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                node_name: nodeSelector.value,
+                usernames: usernames,
+                all_labs: !!allLabs
+            })
+        }).then(function(r) { return r.json(); }).then(function(d) {
+            if (!d.success) { alert('Ошибка: ' + d.message); return; }
+            showStartLogs();
+            appendStartLog('Запуск для пользователей: ' + usernames.join(', '));
+            startStartPolling();
+        });
+    }
+
+    if (startGroupM1Btn)  startGroupM1Btn.addEventListener('click', function() { postStartGroup('m1'); });
+    if (startGroupM2Btn)  startGroupM2Btn.addEventListener('click', function() { postStartGroup('m2'); });
+    if (startGroupAllBtn) startGroupAllBtn.addEventListener('click', function() {
+        if (!confirm('Запустить ноды у ВСЕХ активных пользователей узла?')) return;
+        postStartGroup('all');
+    });
+    if (startSelectedBtn) startSelectedBtn.addEventListener('click', function() {
+        var usernames = [];
+        document.querySelectorAll('input[name="userCheckbox"]:checked').forEach(function(cb) {
+            usernames.push(cb.value);
+        });
+        postStartUsers(usernames, allLabsChk.checked);
+    });
+
+    cancelStartBtn.addEventListener('click', function() {
+        if (!confirm('Отменить операцию запуска нод?')) return;
+        fetch('/cancel_start', {method: 'POST'});
+    });
+    closeStartLogsBtn.addEventListener('click', function() {
+        startLogsSection.style.display = 'none';
+        selectionSection.style.display = 'block';
+    });
+
+    // -- picker modal --
+    var pickerUsers = []; // [{name, lab_count}]
+    var pickerSelected = {}; // name -> bool
+
+    function renderPickerList() {
+        var q = (startPickerSearch.value || '').toLowerCase();
+        while (startPickerList.firstChild) startPickerList.removeChild(startPickerList.firstChild);
+        var visible = pickerUsers.filter(function(u) { return !q || u.name.toLowerCase().indexOf(q) !== -1; });
+        if (!visible.length) {
+            startPickerList.appendChild(el('div', 'empty', 'Нет пользователей'));
+        } else {
+            visible.forEach(function(u) {
+                var row = el('div', 'user-row');
+                var cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.id = 'pick_' + u.name;
+                cb.checked = !!pickerSelected[u.name];
+                cb.addEventListener('change', function() {
+                    pickerSelected[u.name] = cb.checked;
+                    updatePickerCount();
+                });
+                var lbl = document.createElement('label');
+                lbl.htmlFor = cb.id;
+                lbl.appendChild(document.createTextNode(u.name + ' '));
+                lbl.appendChild(el('span', 'user-meta', '(лаб: ' + u.lab_count + ')'));
+                row.appendChild(cb); row.appendChild(lbl);
+                startPickerList.appendChild(row);
+            });
+        }
+        updatePickerCount();
+    }
+
+    function updatePickerCount() {
+        var n = 0;
+        Object.keys(pickerSelected).forEach(function(k) { if (pickerSelected[k]) n++; });
+        startPickerCount.textContent = 'Выбрано: ' + n;
+    }
+
+    if (startPickerBtn) startPickerBtn.addEventListener('click', function() {
+        var nodeName = nodeSelector.value;
+        if (!nodeName) { alert('Сначала выберите узел'); return; }
+        pickerUsers = [];
+        pickerSelected = {};
+        startPickerSearch.value = '';
+        startPickerAllLabs.checked = allLabsChk.checked;
+        while (startPickerList.firstChild) startPickerList.removeChild(startPickerList.firstChild);
+        startPickerList.appendChild(el('div', 'empty', 'Загрузка...'));
+        startPickerModal.style.display = 'block';
+        fetch('/get_node_users/' + encodeURIComponent(nodeName)).then(function(r) { return r.json(); }).then(function(d) {
+            if (!d.success) {
+                while (startPickerList.firstChild) startPickerList.removeChild(startPickerList.firstChild);
+                startPickerList.appendChild(el('div', 'error', 'Ошибка: ' + d.message));
+                return;
+            }
+            pickerUsers = (d.users || []).map(function(u) { return {name: u.name, lab_count: u.lab_count}; });
+            renderPickerList();
+        });
+    });
+
+    startPickerSearch.addEventListener('input', renderPickerList);
+    startPickerSelectAll.addEventListener('click', function() {
+        pickerUsers.forEach(function(u) { pickerSelected[u.name] = true; });
+        renderPickerList();
+    });
+    startPickerSelectNone.addEventListener('click', function() {
+        pickerSelected = {};
+        renderPickerList();
+    });
+    startPickerSelectM1.addEventListener('click', function() {
+        pickerSelected = {};
+        pickerUsers.forEach(function(u) { if (u.name.indexOf('Student-m1-') === 0) pickerSelected[u.name] = true; });
+        renderPickerList();
+    });
+    startPickerSelectM2.addEventListener('click', function() {
+        pickerSelected = {};
+        pickerUsers.forEach(function(u) { if (u.name.indexOf('Student-m2-') === 0) pickerSelected[u.name] = true; });
+        renderPickerList();
+    });
+    startPickerClose.addEventListener('click', function() { startPickerModal.style.display = 'none'; });
+    startPickerModal.addEventListener('click', function(e) { if (e.target === startPickerModal) startPickerModal.style.display = 'none'; });
+    startPickerRunBtn.addEventListener('click', function() {
+        var names = Object.keys(pickerSelected).filter(function(k) { return pickerSelected[k]; });
+        if (!names.length) { alert('Не выбрано ни одного пользователя'); return; }
+        startPickerModal.style.display = 'none';
+        postStartUsers(names, startPickerAllLabs.checked);
+    });
+
+    // ------------------------------------------------------------------ //
+    //  Quick select bar (group filter + bulk checker apply)
+    // ------------------------------------------------------------------ //
+    var filterM1Btn       = document.getElementById('filterM1Btn');
+    var filterM2Btn       = document.getElementById('filterM2Btn');
+    var filterAllBtn      = document.getElementById('filterAllBtn');
+    var filterClearBtn    = document.getElementById('filterClearBtn');
+    var bulkCheckSelect   = document.getElementById('bulkCheckSelect');
+    var applyBulkCheckBtn = document.getElementById('applyBulkCheckBtn');
+
+    function filterUsersByPrefix(prefix) {
+        document.querySelectorAll('input[name="userCheckbox"]').forEach(function(cb) {
+            cb.checked = prefix ? cb.value.indexOf(prefix) === 0 : false;
+        });
+        updateSelectedCount();
+    }
+
+    if (filterM1Btn)    filterM1Btn.addEventListener('click', function() { filterUsersByPrefix('Student-m1-'); });
+    if (filterM2Btn)    filterM2Btn.addEventListener('click', function() { filterUsersByPrefix('Student-m2-'); });
+    if (filterAllBtn)   filterAllBtn.addEventListener('click', function() {
+        document.querySelectorAll('input[name="userCheckbox"]').forEach(function(cb) { cb.checked = true; });
+        updateSelectedCount();
+    });
+    if (filterClearBtn) filterClearBtn.addEventListener('click', function() {
+        document.querySelectorAll('input[name="userCheckbox"]').forEach(function(cb) { cb.checked = false; });
+        updateSelectedCount();
+    });
+    if (applyBulkCheckBtn) applyBulkCheckBtn.addEventListener('click', function() {
+        var variant = bulkCheckSelect ? bulkCheckSelect.value : '';
+        if (!variant) { alert('Выберите вариант в выпадающем списке'); return; }
+        var affected = 0;
+        document.querySelectorAll('input[name="userCheckbox"]:checked').forEach(function(cb) {
+            var sel = document.querySelector('select[data-user="' + cb.value + '"]');
+            if (sel) { sel.value = variant; affected++; }
+        });
+        if (!affected) alert('Нет отмеченных пользователей');
+    });
+
+    // ------------------------------------------------------------------ //
+    //  Stop nodes
+    // ------------------------------------------------------------------ //
+    var stopGroupM1Btn    = document.getElementById('stopGroupM1Btn');
+    var stopGroupM2Btn    = document.getElementById('stopGroupM2Btn');
+    var stopGroupAllBtn   = document.getElementById('stopGroupAllBtn');
+    var stopSelectedBtn   = document.getElementById('stopSelectedBtn');
+
+    var stopLogsSection   = document.getElementById('stopLogsSection');
+    var stopLogsContainer = document.getElementById('stopLogsContainer');
+    var stopProgressBar   = document.getElementById('stopProgressBar');
+    var stopProgressLabel = document.getElementById('stopProgressLabel');
+    var stopStatusBadge   = document.getElementById('stopStatusBadge');
+    var cancelStopBtn     = document.getElementById('cancelStopBtn');
+    var closeStopLogsBtn  = document.getElementById('closeStopLogsBtn');
+
+    var stopPollInterval = null;
+
+    function appendStopLog(line) {
+        var span = el('span', 'log-line');
+        if (line.charAt(0) === '=' || line.indexOf('Остановка') !== -1) span.className += ' sep';
+        else if (line.indexOf('■') !== -1 || line.indexOf('ЗАВЕРШЕНО') !== -1 || line.indexOf('Итог') !== -1) span.className += ' ok';
+        else if (line.indexOf('❌') !== -1 || line.indexOf('ОШИБКА') !== -1 || line.indexOf('ПРЕРВАНО') !== -1 || line.indexOf('⛔') !== -1) span.className += ' err';
+        span.textContent = line;
+        stopLogsContainer.appendChild(span);
+        stopLogsContainer.appendChild(document.createTextNode('\n'));
+        stopLogsContainer.scrollTop = stopLogsContainer.scrollHeight;
+    }
+
+    function showStopLogs() {
+        selectionSection.style.display = 'none';
+        logsSection.style.display = 'none';
+        resultsSection.style.display = 'none';
+        startLogsSection.style.display = 'none';
+        stopLogsSection.style.display = 'block';
+        while (stopLogsContainer.firstChild) stopLogsContainer.removeChild(stopLogsContainer.firstChild);
+        stopProgressBar.style.width = '0%';
+        stopProgressLabel.textContent = '';
+        stopStatusBadge.textContent = 'Идёт остановка...';
+        stopStatusBadge.style.color = 'var(--red)';
+        closeStopLogsBtn.style.display = 'none';
+        cancelStopBtn.style.display = 'inline-block';
+    }
+
+    function startStopPolling() {
+        if (stopPollInterval) clearInterval(stopPollInterval);
+        stopPollInterval = setInterval(function() {
+            fetch('/get_stop_logs').then(function(r) { return r.json(); }).then(function(d) {
+                d.logs.forEach(appendStopLog);
+            });
+            fetch('/get_stop_status').then(function(r) { return r.json(); }).then(function(st) {
+                var pct = st.total > 0 ? Math.round((st.done / st.total) * 100) : 0;
+                stopProgressBar.style.width = pct + '%';
+                if (st.running) {
+                    stopProgressLabel.textContent = 'Завершено: ' + st.done + '/' + st.total +
+                        (st.current_user ? ' (последний: ' + st.current_user + ')' : '');
+                    stopStatusBadge.textContent = 'Идёт остановка...';
+                    stopStatusBadge.style.color = 'var(--red)';
+                } else {
+                    stopProgressLabel.textContent = 'Готово: ' + st.done + '/' + st.total;
+                    stopStatusBadge.textContent = st.cancelled ? 'Отменено' : 'Готово';
+                    stopStatusBadge.style.color = st.cancelled ? 'var(--red)' : 'var(--text-muted)';
+                    closeStopLogsBtn.style.display = 'inline-block';
+                    cancelStopBtn.style.display = 'none';
+                    clearInterval(stopPollInterval); stopPollInterval = null;
+                    fetch('/get_stop_logs').then(function(r) { return r.json(); }).then(function(d) {
+                        d.logs.forEach(appendStopLog);
+                    });
+                }
+            });
+        }, 800);
+    }
+
+    function postStopGroup(group) {
+        var body = {node_name: nodeSelector.value, group: group, all_labs: allLabsChk.checked};
+        fetch('/stop_nodes_group', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body)
+        }).then(function(r) { return r.json(); }).then(function(d) {
+            if (!d.success) { alert('Ошибка: ' + d.message); return; }
+            showStopLogs();
+            appendStopLog('Остановка для группы "' + group + '" — пользователей: ' + d.count);
+            startStopPolling();
+        });
+    }
+
+    function postStopUsers(usernames) {
+        if (!usernames.length) { alert('Не выбрано ни одного пользователя'); return; }
+        fetch('/stop_nodes', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                node_name: nodeSelector.value,
+                usernames: usernames,
+                all_labs: allLabsChk.checked
+            })
+        }).then(function(r) { return r.json(); }).then(function(d) {
+            if (!d.success) { alert('Ошибка: ' + d.message); return; }
+            showStopLogs();
+            appendStopLog('Остановка для пользователей: ' + usernames.join(', '));
+            startStopPolling();
+        });
+    }
+
+    if (stopGroupM1Btn)  stopGroupM1Btn.addEventListener('click', function() { postStopGroup('m1'); });
+    if (stopGroupM2Btn)  stopGroupM2Btn.addEventListener('click', function() { postStopGroup('m2'); });
+    if (stopGroupAllBtn) stopGroupAllBtn.addEventListener('click', function() {
+        if (!confirm('Остановить ноды у ВСЕХ активных пользователей узла?')) return;
+        postStopGroup('all');
+    });
+    if (stopSelectedBtn) stopSelectedBtn.addEventListener('click', function() {
+        var usernames = [];
+        document.querySelectorAll('input[name="userCheckbox"]:checked').forEach(function(cb) {
+            usernames.push(cb.value);
+        });
+        postStopUsers(usernames);
+    });
+
+    cancelStopBtn.addEventListener('click', function() {
+        if (!confirm('Отменить операцию остановки нод?')) return;
+        fetch('/cancel_stop', {method: 'POST'});
+    });
+    closeStopLogsBtn.addEventListener('click', function() {
+        stopLogsSection.style.display = 'none';
+        selectionSection.style.display = 'block';
+    });
+
+    // ------------------------------------------------------------------ //
+    //  Report builder
+    // ------------------------------------------------------------------ //
+    (function() {
+        var reportSection   = document.getElementById('reportSection');
+        var openReportBtn   = document.getElementById('openReportSectionBtn');
+        var backFromReport  = document.getElementById('backToSelectionFromReportBtn');
+        var dropZone        = document.getElementById('reportDropZone');
+        var browseLink      = document.getElementById('reportBrowseLink');
+        var fileInput       = document.getElementById('reportFileInput');
+        var fileListEl      = document.getElementById('reportFileList');
+        var generateBtn     = document.getElementById('generateReportBtn');
+        var clearBtn        = document.getElementById('clearReportFilesBtn');
+        var statusEl        = document.getElementById('reportStatus');
+
+        var selectedFiles = [];
+
+        function allSections() {
+            return [selectionSection,
+                    document.getElementById('logsSection'),
+                    document.getElementById('resultsSection'),
+                    document.getElementById('startLogsSection'),
+                    document.getElementById('stopLogsSection')];
+        }
+
+        function showReport() {
+            allSections().forEach(function(s) { if (s) s.style.display = 'none'; });
+            reportSection.style.display = 'block';
+        }
+
+        function hideReport() {
+            reportSection.style.display = 'none';
+            selectionSection.style.display = 'block';
+        }
+
+        if (openReportBtn) openReportBtn.addEventListener('click', showReport);
+        if (backFromReport) backFromReport.addEventListener('click', hideReport);
+
+        function renderFileList() {
+            if (!selectedFiles.length) {
+                fileListEl.innerHTML = '';
+                generateBtn.disabled = true;
+                return;
+            }
+            var html = '<div style="display:flex;flex-direction:column;gap:4px;">';
+            selectedFiles.forEach(function(f, i) {
+                html += '<div style="display:flex;align-items:center;gap:8px;font-size:0.85rem;">' +
+                    '<span style="color:var(--text-muted);">📦</span>' +
+                    '<span style="flex:1;">' + f.name + ' <span style="color:var(--text-muted);">(' + (f.size / 1024).toFixed(0) + ' КБ)</span></span>' +
+                    '<button class="btn btn-ghost btn-sm" style="padding:2px 8px;" data-idx="' + i + '">✕</button>' +
+                    '</div>';
+            });
+            html += '</div>';
+            fileListEl.innerHTML = html;
+            generateBtn.disabled = false;
+
+            fileListEl.querySelectorAll('[data-idx]').forEach(function(btn) {
+                btn.addEventListener('click', function() {
+                    selectedFiles.splice(parseInt(this.dataset.idx), 1);
+                    renderFileList();
+                });
+            });
+        }
+
+        function addFiles(files) {
+            Array.from(files).forEach(function(f) {
+                if (f.name.endsWith('.zip') && !selectedFiles.find(function(x) { return x.name === f.name; })) {
+                    selectedFiles.push(f);
+                }
+            });
+            renderFileList();
+        }
+
+        if (browseLink) browseLink.addEventListener('click', function() { fileInput.click(); });
+        if (dropZone) dropZone.addEventListener('click', function(e) {
+            if (e.target !== browseLink) fileInput.click();
+        });
+        if (fileInput) fileInput.addEventListener('change', function() { addFiles(this.files); this.value = ''; });
+
+        if (dropZone) {
+            dropZone.addEventListener('dragover', function(e) {
+                e.preventDefault();
+                dropZone.style.borderColor = 'var(--accent)';
+            });
+            dropZone.addEventListener('dragleave', function() {
+                dropZone.style.borderColor = 'var(--border)';
+            });
+            dropZone.addEventListener('drop', function(e) {
+                e.preventDefault();
+                dropZone.style.borderColor = 'var(--border)';
+                addFiles(e.dataTransfer.files);
+            });
+        }
+
+        if (clearBtn) clearBtn.addEventListener('click', function() {
+            selectedFiles = [];
+            renderFileList();
+            statusEl.innerHTML = '';
+        });
+
+        if (generateBtn) generateBtn.addEventListener('click', function() {
+            if (!selectedFiles.length) return;
+            var fd = new FormData();
+            selectedFiles.forEach(function(f) { fd.append('files', f); });
+
+            generateBtn.disabled = true;
+            statusEl.innerHTML = '<span style="color:var(--text-muted);">⏳ Формируем отчёт...</span>';
+
+            fetch('/generate_report', { method: 'POST', body: fd })
+                .then(function(r) {
+                    if (!r.ok) return r.text().then(function(t) { throw new Error(t); });
+                    return r.blob();
+                })
+                .then(function(blob) {
+                    var url = URL.createObjectURL(blob);
+                    var a = document.createElement('a');
+                    var ts = new Date();
+                    var dd = String(ts.getDate()).padStart(2,'0');
+                    var mm = String(ts.getMonth()+1).padStart(2,'0');
+                    var yy = ts.getFullYear();
+                    a.href = url;
+                    a.download = 'report_' + dd + '_' + mm + '_' + yy + '.xlsx';
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                    statusEl.innerHTML = '<span style="color:var(--success);">✅ Отчёт сформирован и скачан</span>';
+                    generateBtn.disabled = false;
+                })
+                .catch(function(e) {
+                    statusEl.innerHTML = '<span style="color:var(--danger);">❌ Ошибка: ' + e.message + '</span>';
+                    generateBtn.disabled = false;
+                });
+        });
+    })();
+
+    // ------------------------------------------------------------------ //
+    //  Init
+    // ------------------------------------------------------------------ //
+    loadNodeSelectorAndUsers();
+    loadGeneratedVariants();
+})();
+</script>
+{% endif %}
+</body>
+</html>

@@ -1,1 +1,9 @@
 .DS_Store
+__pycache__/
+*.pyc
+*.pyo
+.claude/
+web/cookies.txt
+web/nodes.json
+web/logs/
+web/generated_variants/

@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+
+# Локальные конфиги с реальными IP и паролями
+nodes.json
+cookies.txt
+
+# Логи и сгенерированные файлы
+logs/
+generated_variants/
+
+# IDE
+.DS_Store
+.vscode/
+.idea/

@@ -1,0 +1,10 @@
+#!/usr/bin/expect -f
+set timeout 60
+spawn ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p 40042 net_admin@localhost "sh users connected"
+expect {
+    "*User Access Verification*" { send "P@ssw0rd"; exp_continue }
+    "*assword:*" { send "P@ssw0rd"; exp_continue }
+    "*>" { send ""; exp_continue }
+    eof { }
+}
+expect eof

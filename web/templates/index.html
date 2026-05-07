@@ -146,8 +146,18 @@ document.addEventListener('DOMContentLoaded', function() {
             <div id="generatedVariantsList"><div class="empty">Нет сгенерированных вариантов</div></div>
         </div>
 
-        <div style="margin-top:16px;">
+        <div style="margin-top:16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
             <button class="btn btn-green" id="startCheckBtn">&#9654; Начать проверку</button>
+            <label style="display:flex;align-items:center;gap:6px;font-size:0.9rem;color:var(--text-muted);">
+                Параллельных проверок:
+                <input type="number" id="checkWorkersInput" min="1" max="32" value="4"
+                       style="width:60px;padding:4px 6px;border:1px solid var(--border);
+                              background:var(--bg);color:var(--text);border-radius:4px;">
+            </label>
+            <span style="font-size:0.8rem;color:var(--text-muted);">
+                (стенды одной партии — параллельно; модуль 1 и модуль 2/3 несовместимы по ВМ —
+                запускайте партии раздельно)
+            </span>
         </div>
     </div>
 
@@ -623,10 +633,15 @@ document.addEventListener('DOMContentLoaded', function() {
         if (err) { alert(err); return; }
         if (!Object.keys(selected).length) { alert('Выберите хотя бы одного пользователя'); return; }
 
+        var workersInput = document.getElementById('checkWorkersInput');
+        var workers = workersInput ? parseInt(workersInput.value, 10) : 4;
+        if (!workers || workers < 1) workers = 1;
+        if (workers > 32) workers = 32;
+
         fetch('/start_check', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({user_variants: selected, node_name: nodeSelector.value})
+            body: JSON.stringify({user_variants: selected, node_name: nodeSelector.value, workers: workers})
         }).then(function(r) { return r.json(); }).then(function(d) {
             if (!d.success) { alert('Ошибка: ' + d.message); return; }
             selectionSection.style.display = 'none';

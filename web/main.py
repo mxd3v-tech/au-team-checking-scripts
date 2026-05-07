@@ -1554,6 +1554,11 @@ def start_check():
     data = request.get_json()
     user_variants = data.get('user_variants', {})
     node_name = data.get('node_name', '')
+    try:
+        workers = int(data.get('workers') or 4)
+    except (TypeError, ValueError):
+        workers = 4
+    workers = max(1, min(workers, 32))
     if not user_variants:
         return jsonify(success=False, message="Не выбраны пользователи или варианты.")
     nodes = load_nodes()
@@ -1583,7 +1588,7 @@ def start_check():
             break
     threading.Thread(
         target=run_check_in_thread,
-        args=(user_variants, node, current_check_name),
+        args=(user_variants, node, current_check_name, workers),
         daemon=True,
     ).start()
     return jsonify(success=True)
@@ -1609,7 +1614,16 @@ def get_check_status():
             done=check_state['done'],
         )
 
-def run_check_in_thread(user_variants, node, check_name_override=None):
+def run_check_in_thread(user_variants, node, check_name_override=None, workers=4):
+    """Проверяет нескольких студентов с двухфазной схемой:
+    1) последовательно вытягиваем vm_ports каждого стенда (PNETLab держит
+       серверную сессию по api-юзеру глобально — параллельные factory/join
+       друг друга инвалидируют);
+    2) проверки (SSH к ВМ через sshpass/pexpect) выполняются параллельно
+       пулом из `workers` потоков. Для соблюдения ограничения «модуль 1 vs
+       модули 2/3» включение/выключение нужных стендов делает оператор
+       вручную перед запуском проверки — параллелизм здесь только внутри
+       одной выбранной партии."""
     global last_results, last_summary_file, last_node_ip_safe
     try:
         node_base_url = f"http://{node['ip']}"
@@ -1669,43 +1683,59 @@ def run_check_in_thread(user_variants, node, check_name_override=None):
             f.write("Имя пользователя\tВариант\tБалл\n")
 
         results = {}
+        results_local_lock = threading.Lock()
+        summary_lock = threading.Lock()
+
+        def _record_failure(username, check_name, reason_log):
+            log_queue.put(reason_log)
+            with summary_lock, open(summary_filename, "a", encoding="utf-8") as f:
+                f.write(f"{username}\t{check_name}\t0\n")
+            with results_local_lock:
+                results[username] = {'check_name': check_name, 'score': 0, 'log_file': None}
+            with check_state_lock:
+                check_state['done'] = check_state.get('done', 0) + 1
+
         items = list(user_variants.items())
-        for idx, (username, check_name) in enumerate(items):
+
+        # ── Фаза 1: последовательно собираем vm_ports каждого стенда ──
+        prepared = []  # [(username, check_name, vm_ports), ...]
+        for username, check_name in items:
             if cancel_event.is_set():
-                log_queue.put("⛔ Проверка прервана.")
+                log_queue.put("⛔ Проверка прервана на этапе подготовки.")
                 break
 
             with check_state_lock:
-                check_state['current_user'] = username
-                check_state['done'] = idx
+                check_state['current_user'] = f"подготовка: {username}"
 
-            log_queue.put(f"{'='*20} ПРОВЕРКА: {username} ({check_name}) {'='*20}")
+            log_queue.put(f"▶ Подготовка стенда: {username} ({check_name})")
             pod = user_to_pod.get(username)
             if pod is None or pod not in pod_labs:
-                log_queue.put(f"❌ Пользователь {username} не найден или нет лаб")
-                results[username] = {'check_name': check_name, 'score': 0, 'log_file': None}
-                with open(summary_filename, "a", encoding="utf-8") as f:
-                    f.write(f"{username}\t{check_name}\t0\n")
+                _record_failure(username, check_name,
+                                f"❌ Пользователь {username} не найден или нет лаб")
                 continue
 
             lab_id = sorted(pod_labs[pod])[0]
-            sess.post(f"{node_base_url}/api/labs/session/factory/join", json={"lab_session": lab_id})
-            topo_resp = sess.get(f"{node_base_url}/api/labs/session/topology")
+            try:
+                sess.post(f"{node_base_url}/api/labs/session/factory/join",
+                          json={"lab_session": lab_id}, timeout=15)
+                topo_resp = sess.get(f"{node_base_url}/api/labs/session/topology", timeout=15)
+            except Exception as e:
+                _record_failure(username, check_name,
+                                f"❌ Ошибка PNETLab для {username}: {e}")
+                continue
             if topo_resp.status_code != 200:
-                log_queue.put(f"❌ Ошибка топологии для {username}")
-                results[username] = {'check_name': check_name, 'score': 0, 'log_file': None}
+                _record_failure(username, check_name,
+                                f"❌ Ошибка топологии для {username}: HTTP {topo_resp.status_code}")
                 continue
             topology = topo_resp.json().get("data", {}).get("nodes", {})
             if not isinstance(topology, dict):
-                log_queue.put("❌ Некорректная топология")
-                results[username] = {'check_name': check_name, 'score': 0, 'log_file': None}
+                _record_failure(username, check_name,
+                                f"❌ Некорректная топология ({username})")
                 continue
 
             name_to_ports = parse_qemu_by_lab(lab_id)
 
             # Для нод, которых нет в ps aux, пробуем fallback: map_port из топологии.
-            # Это поле PNETLab сам выставляет при запуске ВМ и оно остаётся актуальным,
-            # даже если hostfwd в командной строке QEMU парсится с другим форматом.
             vm_ports = {}
             for info in topology.values():
                 name = info.get("name")
@@ -1713,7 +1743,6 @@ def run_check_in_thread(user_variants, node, check_name_override=None):
                     continue
                 port = name_to_ports.get(name)
                 if port is None or port == "N/A":
-                    # Пробуем map_port из самой топологии (PNETLab ставит его при старте)
                     map_port = info.get("map_port")
                     if map_port and str(map_port) not in ("0", "N/A", ""):
                         port = str(map_port)
@@ -1730,40 +1759,89 @@ def run_check_in_thread(user_variants, node, check_name_override=None):
                 log_queue.put(f"⚠️ {username}: ВМ не найдены в QEMU и в map_port: {na_vms}. "
                               f"Проверка продолжается (задания на этих ВМ не будут засчитаны).")
 
-            import importlib.util
-            module_name = f"assignment_checker_{check_name}"
-            checker_path = os.path.join(VARIANTS_DIR, f"{module_name}.py")
-            if os.path.exists(checker_path):
-                spec = importlib.util.spec_from_file_location(module_name, checker_path)
-                checker = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(checker)
-            else:
-                checker = __import__(module_name, fromlist=['run_full_assignment_check'])
-            run_check = getattr(checker, 'run_full_assignment_check', None)
-            if not run_check:
-                log_queue.put(f"❌ Функция проверки не найдена в {check_name}")
-                results[username] = {'check_name': check_name, 'score': 0, 'log_file': None}
-                continue
+            prepared.append((username, check_name, vm_ports))
 
-            score, log_lines = run_check(vm_ports)
-            for line in log_lines:
-                log_queue.put(line)
-            log_queue.put(f"🧮 ИТОГО: {username} — {score} по {check_name}")
+        # ── Фаза 2: параллельная проверка ──
+        if prepared and not cancel_event.is_set():
+            try:
+                wcount = max(1, min(int(workers or 4), len(prepared)))
+            except (TypeError, ValueError):
+                wcount = min(4, len(prepared))
+            log_queue.put(f"▶ Параллельная проверка: {len(prepared)} стендов, "
+                          f"workers={wcount}")
 
-            user_log_filename = os.path.join(LOGS_DIR, f"outstend_{check_name}_{username.replace('-', '_')}-{node_ip_safe}.txt")
-            # Многие чекеры возвращают строки уже с завершающим '\n'; добавлять
-            # ещё один разделитель через '\n'.join приводит к пустым строкам в
-            # выгружаемом логе. Нормализуем переводы строк перед записью.
-            normalized_lines = [
-                (line if line.endswith('\n') else line + '\n')
-                for line in log_lines
-            ]
-            with open(user_log_filename, "w", encoding="utf-8") as f:
-                f.writelines(normalized_lines)
-            log_queue.put(f"✅ Лог сохранён: {user_log_filename}")
-            with open(summary_filename, "a", encoding="utf-8") as f:
-                f.write(f"{username}\t{check_name}\t{score}\n")
-            results[username] = {'check_name': check_name, 'score': score, 'log_file': user_log_filename}
+            def _do_check(username, check_name, vm_ports):
+                if cancel_event.is_set():
+                    return username, check_name, 0, ["⛔ Отменено до запуска чекера."]
+                with check_state_lock:
+                    check_state['current_user'] = username
+                try:
+                    module_name = f"assignment_checker_{check_name}"
+                    checker_path = os.path.join(VARIANTS_DIR, f"{module_name}.py")
+                    if os.path.exists(checker_path):
+                        spec = importlib.util.spec_from_file_location(module_name, checker_path)
+                        checker = importlib.util.module_from_spec(spec)
+                        spec.loader.exec_module(checker)
+                    else:
+                        checker = __import__(module_name, fromlist=['run_full_assignment_check'])
+                    fn = getattr(checker, 'run_full_assignment_check', None)
+                    if not fn:
+                        return username, check_name, 0, [
+                            f"❌ Функция проверки не найдена в {check_name}"
+                        ]
+                    score, log_lines = fn(vm_ports)
+                    return username, check_name, score, log_lines
+                except Exception as e:
+                    return username, check_name, 0, [
+                        f"❌ Исключение в чекере {check_name} для {username}: {e}",
+                        traceback.format_exc(),
+                    ]
+
+            with ThreadPoolExecutor(max_workers=wcount) as ex:
+                futures = [ex.submit(_do_check, u, c, p) for (u, c, p) in prepared]
+                for fut in as_completed(futures):
+                    try:
+                        username, check_name, score, log_lines = fut.result()
+                    except Exception as e:
+                        log_queue.put(f"❌ Воркер упал с исключением: {e}")
+                        with check_state_lock:
+                            check_state['done'] = check_state.get('done', 0) + 1
+                        continue
+
+                    log_queue.put(f"{'='*15} РЕЗУЛЬТАТ: {username} ({check_name}) "
+                                  f"— {score} {'='*15}")
+                    for line in log_lines:
+                        log_queue.put(line)
+                    log_queue.put(f"🧮 ИТОГО: {username} — {score} по {check_name}")
+
+                    user_log_filename = os.path.join(
+                        LOGS_DIR,
+                        f"outstend_{check_name}_{username.replace('-', '_')}-{node_ip_safe}.txt",
+                    )
+                    normalized_lines = [
+                        (line if line.endswith('\n') else line + '\n')
+                        for line in log_lines
+                    ]
+                    saved_path = user_log_filename
+                    try:
+                        with open(user_log_filename, "w", encoding="utf-8") as f:
+                            f.writelines(normalized_lines)
+                        log_queue.put(f"✅ Лог сохранён: {user_log_filename}")
+                    except Exception as e:
+                        log_queue.put(f"⚠️ Не удалось сохранить лог "
+                                      f"{user_log_filename}: {e}")
+                        saved_path = None
+
+                    with summary_lock, open(summary_filename, "a", encoding="utf-8") as f:
+                        f.write(f"{username}\t{check_name}\t{score}\n")
+                    with results_local_lock:
+                        results[username] = {
+                            'check_name': check_name,
+                            'score': score,
+                            'log_file': saved_path,
+                        }
+                    with check_state_lock:
+                        check_state['done'] = check_state.get('done', 0) + 1
 
         with results_lock:
             last_results = results
@@ -1771,7 +1849,6 @@ def run_check_in_thread(user_variants, node, check_name_override=None):
         log_queue.put("- ВСЕ ПРОВЕРКИ ЗАВЕРШЕНЫ -")
     except Exception as e:
         log_queue.put(f"❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
-        import traceback
         log_queue.put(traceback.format_exc())
     finally:
         with check_state_lock:
@@ -2314,8 +2391,24 @@ def start_nodes_for_users_cli(node, usernames, *, all_labs=False,
     return results
 
 
-def run_check_for_users(node, user_variants, log_q, cancel_ev, progress_cb=None):
-    """CLI-версия проверки. Логи в log_q. Возвращает dict результатов."""
+def _default_workers():
+    try:
+        return max(1, min(int(os.environ.get('CHECK_WORKERS', '4')), 32))
+    except (TypeError, ValueError):
+        return 4
+
+
+def run_check_for_users(node, user_variants, log_q, cancel_ev, progress_cb=None,
+                        workers=None):
+    """CLI-версия проверки. Логи в log_q. Возвращает dict результатов.
+
+    Двухфазная схема (как и в web): сначала последовательно достаём vm_ports
+    каждого стенда (PNETLab держит api-сессию глобально), затем чекеры
+    запускаются параллельно пулом из `workers` потоков (по умолчанию 4 или
+    переменная окружения CHECK_WORKERS).
+    """
+    if workers is None:
+        workers = _default_workers()
     results = {}
     ip = node["ip"]
     sess, err = login_to_node(ip, node["username"], node["password"])
@@ -2341,58 +2434,129 @@ def run_check_for_users(node, user_variants, log_q, cancel_ev, progress_cb=None)
                 pod_labs[int(item["node_session_pod"])].add(int(item["node_session_lab"]))
             except Exception:
                 pass
+
     total = len(user_variants)
-    for idx, (username, check_name) in enumerate(user_variants.items()):
-        if cancel_ev.is_set():
-            log_q.put("Проверка прервана.")
-            break
+    done_counter = [0]
+    counter_lock = threading.Lock()
+    results_lock_local = threading.Lock()
+
+    def _bump_progress(username=''):
+        with counter_lock:
+            done_counter[0] += 1
+            done_now = done_counter[0]
         if progress_cb:
-            progress_cb(idx, total, username)
+            progress_cb(done_now, total, username)
+
+    # ── Фаза 1: последовательно собираем vm_ports каждого стенда ──
+    prepared = []  # [(username, check_name, vm_ports), ...]
+    for username, check_name in user_variants.items():
+        if cancel_ev.is_set():
+            log_q.put("Проверка прервана на этапе подготовки.")
+            break
         log_q.put("=" * 50)
-        log_q.put(f"ПРОВЕРКА: {username} ({check_name})")
+        log_q.put(f"ПОДГОТОВКА: {username} ({check_name})")
         pod = user_to_pod.get(username)
         if pod is None or pod not in pod_labs:
             log_q.put(f"  {username}: нет лаб")
-            results[username] = {'check': check_name, 'score': 0, 'log': []}
+            with results_lock_local:
+                results[username] = {'check': check_name, 'score': 0, 'log': []}
+            _bump_progress(username)
             continue
         lab_id = sorted(pod_labs[pod])[0]
-        sess.post(f"http://{ip}/api/labs/session/factory/join", json={"lab_session": lab_id})
-        topo_r = sess.get(f"http://{ip}/api/labs/session/topology")
+        try:
+            sess.post(f"http://{ip}/api/labs/session/factory/join",
+                      json={"lab_session": lab_id}, timeout=15)
+            topo_r = sess.get(f"http://{ip}/api/labs/session/topology", timeout=15)
+        except Exception as e:
+            log_q.put(f"  PNETLab ошибка для {username}: {e}")
+            with results_lock_local:
+                results[username] = {'check': check_name, 'score': 0, 'log': []}
+            _bump_progress(username)
+            continue
         if topo_r.status_code != 200:
             log_q.put(f"  Ошибка топологии для {username}")
-            results[username] = {'check': check_name, 'score': 0, 'log': []}
+            with results_lock_local:
+                results[username] = {'check': check_name, 'score': 0, 'log': []}
+            _bump_progress(username)
             continue
         topology = topo_r.json().get("data", {}).get("nodes", {})
         if not isinstance(topology, dict):
-            results[username] = {'check': check_name, 'score': 0, 'log': []}
+            with results_lock_local:
+                results[username] = {'check': check_name, 'score': 0, 'log': []}
+            _bump_progress(username)
             continue
         ports = parse_qemu_by_lab(lab_id)
         vm_ports = {info.get("name"): ports.get(info.get("name"), "N/A")
                     for info in topology.values() if info.get("name")}
-        module_name = f"assignment_checker_{check_name}"
-        checker_path = os.path.join(VARIANTS_DIR, f"{module_name}.py")
+        prepared.append((username, check_name, vm_ports))
+
+    # ── Фаза 2: параллельная проверка ──
+    if prepared and not cancel_ev.is_set():
         try:
-            if os.path.exists(checker_path):
-                spec = importlib.util.spec_from_file_location(module_name, checker_path)
-                mod = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(mod)
-            else:
-                mod = __import__(module_name, fromlist=['run_full_assignment_check'])
-            fn = getattr(mod, 'run_full_assignment_check', None)
-            if not fn:
-                log_q.put(f"  Функция не найдена в {check_name}")
-                continue
-            score, lines = fn(vm_ports)
-        except Exception as e:
-            log_q.put(f"  Исключение в чекере: {e}")
-            score, lines = 0, [traceback.format_exc()]
-        for line in lines:
-            log_q.put(line)
-        log_q.put(f"ИТОГО: {username} — {score}")
-        log_file = os.path.join(LOGS_DIR, f"outstend_{check_name}_{username.replace('-', '_')}.txt")
-        with open(log_file, "w", encoding="utf-8") as fh:
-            fh.write('\n'.join(lines))
-        results[username] = {'check': check_name, 'score': score, 'log': lines, 'log_file': log_file}
+            wcount = max(1, min(int(workers), len(prepared)))
+        except (TypeError, ValueError):
+            wcount = min(_default_workers(), len(prepared))
+        log_q.put(f"▶ Параллельная проверка: {len(prepared)} стендов, "
+                  f"workers={wcount}")
+
+        def _do_check(username, check_name, vm_ports):
+            if cancel_ev.is_set():
+                return username, check_name, 0, ["Отменено до запуска чекера."]
+            try:
+                module_name = f"assignment_checker_{check_name}"
+                checker_path = os.path.join(VARIANTS_DIR, f"{module_name}.py")
+                if os.path.exists(checker_path):
+                    spec = importlib.util.spec_from_file_location(module_name, checker_path)
+                    mod = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(mod)
+                else:
+                    mod = __import__(module_name, fromlist=['run_full_assignment_check'])
+                fn = getattr(mod, 'run_full_assignment_check', None)
+                if not fn:
+                    return username, check_name, 0, [
+                        f"  Функция не найдена в {check_name}"
+                    ]
+                score, lines = fn(vm_ports)
+                return username, check_name, score, lines
+            except Exception as e:
+                return username, check_name, 0, [
+                    f"  Исключение в чекере {check_name} для {username}: {e}",
+                    traceback.format_exc(),
+                ]
+
+        with ThreadPoolExecutor(max_workers=wcount) as ex:
+            futures = [ex.submit(_do_check, u, c, p) for (u, c, p) in prepared]
+            for fut in as_completed(futures):
+                try:
+                    username, check_name, score, lines = fut.result()
+                except Exception as e:
+                    log_q.put(f"Воркер упал: {e}")
+                    _bump_progress('')
+                    continue
+                log_q.put("=" * 50)
+                log_q.put(f"РЕЗУЛЬТАТ: {username} ({check_name}) — {score}")
+                for line in lines:
+                    log_q.put(line)
+                log_q.put(f"ИТОГО: {username} — {score}")
+                log_file = os.path.join(
+                    LOGS_DIR,
+                    f"outstend_{check_name}_{username.replace('-', '_')}.txt",
+                )
+                normalized = [
+                    (l if l.endswith('\n') else l + '\n') for l in lines
+                ]
+                saved = log_file
+                try:
+                    with open(log_file, "w", encoding="utf-8") as fh:
+                        fh.writelines(normalized)
+                except Exception as e:
+                    log_q.put(f"  Не удалось сохранить лог {log_file}: {e}")
+                    saved = None
+                with results_lock_local:
+                    results[username] = {'check': check_name, 'score': score,
+                                         'log': lines, 'log_file': saved}
+                _bump_progress(username)
+
     if progress_cb:
         progress_cb(total, total, '')
     log_q.put("=== ВСЕ ПРОВЕРКИ ЗАВЕРШЕНЫ ===")

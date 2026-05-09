@@ -1,9 +1,18 @@
-flask>=2.2.0
-werkzeug>=2.2.0
+# Python 3.9+
+
+# Веб-интерфейс
+flask>=2.2
+
+# HTTP-клиент к API PNETLab/EVE-NG
 requests>=2.27
+
+# Генерация Excel-отчётов (вкладка «Результаты» → /generate_report)
+openpyxl>=3.1
+
+# Опционально: проверка роутеров EcoRouterOS через SSH expect.
+# Без него проверки роутеров пропускаются — остальной функционал работает.
 pexpect>=4.8
-openpyxl>=3.1.0
 
 # sshpass — системная утилита, НЕ pip-пакет.
-# Установить: apt-get install sshpass  (Debian/Ubuntu)
-#              yum install sshpass      (RHEL/CentOS)
+#   Debian/Ubuntu: apt-get install sshpass
+#   RHEL/CentOS:   yum install sshpass

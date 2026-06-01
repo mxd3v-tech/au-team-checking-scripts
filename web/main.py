@@ -1839,6 +1839,7 @@ def run_check_in_thread(user_variants, node, check_name_override=None, workers=4
                             'check_name': check_name,
                             'score': score,
                             'log_file': saved_path,
+                            'vedomost': parse_vedomost(log_lines),
                         }
                     with check_state_lock:
                         check_state['done'] = check_state.get('done', 0) + 1
@@ -1855,6 +1856,55 @@ def run_check_in_thread(user_variants, node, check_name_override=None, workers=4
             check_state['running'] = False
             check_state['current_user'] = ''
             check_state['done'] = check_state['total']
+
+
+# ─── Разбор итогового блока 📊…📈 в оценочную ведомость ──────────────────────
+VEDOMOST_MODULE_TITLES = {
+    "1": "Модуль 1. Настройка сетевой инфраструктуры",
+    "2": "Модуль 2. Организация сетевого администрирования",
+    "3": "Модуль 3. Эксплуатация объектов сетевой инфраструктуры",
+    "4": "Вариативная часть. Настройка узла управления Ansible",
+}
+
+# Строка вида: "<иконка> 1.1 Краткое название: 2/2"
+_VEDOMOST_LINE_RE = re.compile(r'^\S+\s+(\d+\.\d+)\s+(.+?):\s*([\d.]+)\s*/\s*([\d.]+)\s*$')
+
+
+def parse_vedomost(log_lines):
+    """Извлекает строки итогового блока (от 📊 до 📈) и собирает оценочную
+    ведомость: [{module, code, title, score, max, status}].
+    Контракт чекеров не меняется — читаем уже сформированный итоговый блок."""
+    def _num(x):
+        f = float(x)
+        return int(f) if f == int(f) else f
+
+    rows = []
+    in_block = False
+    for raw in (log_lines or []):
+        line = str(raw).rstrip("\n")
+        if "📊" in line:
+            in_block = True
+            continue
+        if "📈" in line:
+            in_block = False
+            continue
+        if not in_block:
+            continue
+        m = _VEDOMOST_LINE_RE.match(line.strip())
+        if not m:
+            continue
+        code, title, sc, mx = m.groups()
+        score, mx = _num(sc), _num(mx)
+        status = "ok" if score >= mx and mx > 0 else ("fail" if score == 0 else "partial")
+        rows.append({
+            "module": code.split(".")[0],
+            "code": code,
+            "title": title.strip(),
+            "score": score,
+            "max": mx,
+            "status": status,
+        })
+    return rows
 
 
 @app.route('/get_logs')

@@ -728,10 +728,72 @@ document.addEventListener('DOMContentLoaded', function() {
                 var btn = el('button', 'btn btn-cyan btn-sm', '↓ Лог');
                 a.appendChild(btn); tdAction.appendChild(a);
 
-                tr.appendChild(tdUser); tr.appendChild(tdCheck); tr.appendChild(tdScore); tr.appendChild(tdAction);
-                resultsTableBody.appendChild(tr);
+                var ved = res && res.vedomost;
+                if (ved && ved.length) {
+                    var vbtn = el('button', 'btn btn-ghost btn-sm', '📋 Ведомость');
+                    vbtn.style.marginLeft = '6px';
+                    tdAction.appendChild(vbtn);
+                    tr.appendChild(tdUser); tr.appendChild(tdCheck); tr.appendChild(tdScore); tr.appendChild(tdAction);
+                    resultsTableBody.appendChild(tr);
+                    var detailTr = buildVedomostRow(ved);
+                    resultsTableBody.appendChild(detailTr);
+                    vbtn.addEventListener('click', function() {
+                        detailTr.style.display = (detailTr.style.display === 'none') ? '' : 'none';
+                    });
+                } else {
+                    tr.appendChild(tdUser); tr.appendChild(tdCheck); tr.appendChild(tdScore); tr.appendChild(tdAction);
+                    resultsTableBody.appendChild(tr);
+                }
             });
         });
+    }
+
+    // Строит скрытую строку-детализацию с оценочной ведомостью (как в Ведомости.pdf)
+    function buildVedomostRow(ved) {
+        var moduleTitles = {
+            "1": "Модуль 1. Настройка сетевой инфраструктуры",
+            "2": "Модуль 2. Организация сетевого администрирования",
+            "3": "Модуль 3. Эксплуатация объектов сетевой инфраструктуры",
+            "4": "Вариативная часть. Настройка узла управления Ansible"
+        };
+        var tr = document.createElement('tr');
+        tr.style.display = 'none';
+        var td = el('td', 'ved-cell');
+        td.colSpan = 4;
+
+        var order = [], groups = {};
+        ved.forEach(function(r) {
+            if (!groups[r.module]) { groups[r.module] = []; order.push(r.module); }
+            groups[r.module].push(r);
+        });
+        order.forEach(function(mod) {
+            var rows = groups[mod];
+            var sum = 0, max = 0;
+            rows.forEach(function(r) { sum += Number(r.score); max += Number(r.max); });
+            td.appendChild(el('div', 'ved-caption',
+                (moduleTitles[mod] || ('Модуль ' + mod)) + ' — ' + sum + ' / ' + max));
+
+            var t = el('table', 'ved-table');
+            var thead = document.createElement('thead');
+            var htr = document.createElement('tr');
+            ['Код', 'Оцениваемые действия', 'Макс.', 'Балл'].forEach(function(h) {
+                htr.appendChild(el('th', '', h));
+            });
+            thead.appendChild(htr); t.appendChild(thead);
+
+            var tb = document.createElement('tbody');
+            rows.forEach(function(r) {
+                var rtr = el('tr', 'ved-' + r.status);
+                rtr.appendChild(el('td', 'ved-code', r.code));
+                rtr.appendChild(el('td', '', r.title));
+                rtr.appendChild(el('td', 'ved-num', String(r.max)));
+                rtr.appendChild(el('td', 'ved-num', String(r.score)));
+                tb.appendChild(rtr);
+            });
+            t.appendChild(tb); td.appendChild(t);
+        });
+        tr.appendChild(td);
+        return tr;
     }
 
     backBtn.addEventListener('click', function() {
